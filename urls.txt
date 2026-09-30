@@ -1,0 +1,3 @@
+# فرمت: URL | قیمت هدف (اختیاری)
+# هر خط یه محصول
+https://www.digikala.com/product/dkp-22214723/

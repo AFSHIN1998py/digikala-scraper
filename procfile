@@ -1,1 +1,1 @@
-worker: python scraper.py --file urls.txt
+worker: python bot.py

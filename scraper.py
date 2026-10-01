@@ -458,6 +458,19 @@ def monitor(urls_file: str, once: bool = False):
 # ============================================
 # بخش ۶: CLI (خط فرمان)
 # ============================================
+def send_startup_message():
+    """ارسال پیام شروع به تلگرام (برای تست اتصال)"""
+    msg = (
+        "🚀 <b>اسکرپر دیجی‌کالا روشن شد!</b>\n\n"
+        "✅ اتصال تلگرام برقرار است.\n"
+        "⏰ شروع پایش خودکار..."
+    )
+    success = send_telegram(msg)
+    if success:
+        logger.info("✅ پیام شروع تلگرام ارسال شد.")
+    else:
+        logger.error("❌ پیام شروع تلگرام ارسال نشد!")
+    return success
 def main():
     parser = argparse.ArgumentParser(description="اسکرپر دیجی‌کالا")
     parser.add_argument("--url", "-u", help="لینک یه محصول برای تست سریع")
@@ -469,7 +482,7 @@ def main():
     args = parser.parse_args()
 
     init_db()
-
+    send_startup_message()   
     if args.export:
         export_to_csv()
         return

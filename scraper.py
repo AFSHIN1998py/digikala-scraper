@@ -343,19 +343,31 @@ def parse_api_response(data: dict) -> tuple[str, int] | None:
 # ============================================
 # بخش ۴: جستجوی محصول با اسم
 # ============================================
-def search_products(query: str, limit: int = 10, sort: str = "relevance") -> list[dict]:
-    """جستجوی محصول در دیجی‌کالا با اسم + امکان مرتب‌سازی"""
+def search_products(query: str, limit: int = 10, sort: str = "relevance",
+                    min_price: int = 0, max_price: int = 0,
+                    only_discounted: bool = False,
+                    only_available: bool = False) -> list[dict]:
+    """
+    جستجوی محصول با فیلترهای سمت پایتون
+    
+    Args:
+        query: اسم محصول
+        limit: تعداد نتایج نهایی
+        sort: نحوه مرتب‌سازی
+        min_price: حداقل قیمت (تومان) - 0 یعنی بدون محدودیت
+        max_price: حداکثر قیمت (تومان) - 0 یعنی بدون محدودیت
+        only_discounted: فقط محصولات تخفیف‌دار
+        only_available: فقط محصولات موجود
+    """
     q = urllib.parse.quote(query)
 
-    # برای مرتب‌سازی قیمت، از API استفاده نمی‌کنیم (دیگه پشتیبانی نمی‌شه)
-    # به جاش خودمون نتایج رو در پایتون مرتب می‌کنیم
+    # تعداد بیشتری می‌گیریم تا فیلترها حذف کنن ولی نتیجه کافی بمونه
+    fetch_count = 40
+
     if sort in ("cheapest", "expensive"):
-        # تعداد بیشتری می‌گیریم تا بعد از مرتب‌سازی، بهترین‌ها رو داشته باشیم
-        api_sort = 1  # relevance
-        fetch_limit = 40
+        api_sort = 1
     else:
         api_sort = SORT_CODES.get(sort, 1)
-        fetch_limit = limit
 
     url = f"https://api.digikala.com/v1/search/?q={q}&sort={api_sort}"
 
@@ -374,30 +386,69 @@ def search_products(query: str, limit: int = 10, sort: str = "relevance") -> lis
         products = data.get("data", {}).get("products", []) or []
 
         results = []
-        for p in products[:fetch_limit]:
+        for p in products[:fetch_count]:
             product_id = p.get("id")
             if not product_id:
                 continue
 
             title = p.get("title_fa", "نامشخص")
             variant = p.get("default_variant") or {}
-            price_rial = variant.get("price", {}).get("selling_price")
+            price_data = variant.get("price", {}) or {}
+            price_rial = price_data.get("selling_price")
+            rrp_rial = price_data.get("rrp_price")
+            discount = price_data.get("discount_percent", 0) or 0
+            stock = price_data.get("marketable_stock", 0) or 0
+
             price_toman = int(price_rial) // 10 if price_rial else None
+            rrp_toman = int(rrp_rial) // 10 if rrp_rial else None
 
             rating = p.get("rating", {}) or {}
             rating_rate = rating.get("rate")
             rating_count = rating.get("count")
+
+            # عکس
+            images = p.get("images", {}) or {}
+            main_img = images.get("main", {}) if isinstance(images, dict) else {}
+            img_urls = main_img.get("url", []) if isinstance(main_img, dict) else []
+            if isinstance(img_urls, str):
+                img_urls = [img_urls]
+            image = img_urls[0] if img_urls else None
 
             results.append({
                 "id": product_id,
                 "title": title,
                 "url": f"https://www.digikala.com/product/dkp-{product_id}/",
                 "price": price_toman,
+                "rrp_price": rrp_toman,
+                "discount": discount,
+                "stock": stock,
                 "rating": rating_rate,
                 "rating_count": rating_count,
+                "image": image,
             })
 
-        # مرتب‌سازی در پایتون برای قیمت
+        # ---------- فیلترهای سمت پایتون ----------
+        filtered = []
+        for r in results:
+            # فیلتر قیمت
+            if min_price > 0 and (r["price"] is None or r["price"] < min_price):
+                continue
+            if max_price > 0 and (r["price"] is None or r["price"] > max_price):
+                continue
+
+            # فیلتر تخفیف
+            if only_discounted and r["discount"] <= 0:
+                continue
+
+            # فیلتر موجودی
+            if only_available and r["stock"] <= 0:
+                continue
+
+            filtered.append(r)
+
+        results = filtered
+
+        # ---------- مرتب‌سازی نهایی ----------
         if sort == "cheapest":
             results = [r for r in results if r.get("price")]
             results.sort(key=lambda x: x["price"])
@@ -410,6 +461,7 @@ def search_products(query: str, limit: int = 10, sort: str = "relevance") -> lis
     except Exception as e:
         logger.error(f"❌ خطای جستجو: {e}")
         return []
+    
 def resolve_url_or_search(entry: str) -> str | None:
     """اگه لینک بود همون رو برگردون؛ اگه اسم بود، سرچ کن و اولین نتیجه رو بده"""
     entry = entry.strip()

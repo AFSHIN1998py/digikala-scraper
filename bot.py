@@ -1,9 +1,10 @@
 """
-ربات تلگرام اسکرپر دیجی‌کالا - v3.1
+ربات تلگرام اسکرپر دیجی‌کالا - v3.2
 ==============================================
-- جستجو با 3 صفحه API (60 محصول)
-- فیلترهای چندگانه (قیمت + تخفیف + موجودی)
-- صفحه‌بندی، صفحه جزئیات، ویرایش، حذف
+- افزودن با اسم OR لینک
+- ذخیره قیمت اولیه هنگام افزودن
+- فیلترهای چندگانه
+- صفحه‌بندی 60 محصول
 """
 import os
 import html
@@ -20,9 +21,10 @@ from telegram.ext import (
 )
 
 from scraper import (
-    search_products, export_to_csv, init_db, monitor,
+    search_products, search_torob, export_to_csv, init_db, monitor,
     send_startup_message, DB_PATH, CSV_PATH, BOT_TOKEN,
-    SORT_NAMES_FA,
+    SORT_NAMES_FA, extract_product_id, fetch_product_api,
+    parse_api_response,
 )
 
 logging.basicConfig(
@@ -32,7 +34,7 @@ logging.basicConfig(
 logger = logging.getLogger("bot")
 
 PAGE_SIZE = 10
-MAX_RESULTS = 60  # 3 صفحه × 20
+MAX_RESULTS = 60
 
 
 def esc(text) -> str:
@@ -119,7 +121,8 @@ def update_target_price(product_id: int, target: int) -> bool:
         conn.close()
 
 
-def insert_product(url: str, title: str, target: int = 0) -> int | None:
+def insert_product(url: str, title: str, target: int = 0, price: int = None) -> int | None:
+    """اضافه کردن محصول + ذخیره قیمت اولیه اگه داشتیم"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
@@ -128,8 +131,24 @@ def insert_product(url: str, title: str, target: int = 0) -> int | None:
             VALUES (?, ?, ?, ?)
         """, (url, title, target, datetime.now().isoformat()))
         conn.commit()
+
         row = c.execute("SELECT product_id FROM products WHERE url = ?", (url,)).fetchone()
-        return row[0] if row else None
+        pid = row[0] if row else None
+
+        # ذخیره قیمت اولیه اگه داشتیم (فقط برای محصول جدید)
+        if pid and price:
+            existing = c.execute("""
+                SELECT COUNT(*) FROM price_history WHERE product_id = ?
+            """, (pid,)).fetchone()[0]
+            if existing == 0:
+                c.execute("""
+                    INSERT INTO price_history (product_id, price, timestamp)
+                    VALUES (?, ?, ?)
+                """, (pid, price, datetime.now().isoformat()))
+                conn.commit()
+                logger.info(f"💰 قیمت اولیه ذخیره شد: {price:,} برای {title[:30]}")
+
+        return pid
     except sqlite3.Error as e:
         logger.error(f"DB: {e}")
         return None
@@ -231,6 +250,7 @@ def filters_menu_kb(active=None):
 def product_detail_kb(url: str, abs_idx: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ افزودن به پایش", callback_data=f"add:{abs_idx}")],
+        [InlineKeyboardButton("🏆 مقایسه در ترب", callback_data=f"torob:{abs_idx}")],
         [InlineKeyboardButton("🛒 خرید در دیجی‌کالا", url=url)],
         [InlineKeyboardButton("🔙 بازگشت به نتایج", callback_data="back_results")],
     ])
@@ -252,7 +272,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "📚 <b>راهنما</b>\n\n"
-        "<b>➕ افزودن:</b> اسم محصول → انتخاب → قیمت هدف\n"
+        "<b>➕ افزودن:</b>\n"
+        "اسم محصول یا لینکش رو بفرست:\n"
+        "• اسم: <code>ساک ورزشی</code>\n"
+        "• لینک: <code>https://www.digikala.com/product/dkp-...</code>\n\n"
         "<b>📋 لیست:</b> مدیریت محصولات\n"
         "<b>📊 CSV:</b> دریافت فایل اکسل\n"
         "<b>🔧 فیلترها:</b> می‌تونی چند فیلتر رو با هم انتخاب کنی، بعد «نمایش نتایج» رو بزنی.\n"
@@ -276,7 +299,11 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     context.user_data["state"] = "waiting_name"
     await update.message.reply_text(
-        "🔍 <b>اسم محصول رو بفرست:</b>\n\nمثال: <code>ساک ورزشی</code>",
+        "🔍 <b>اسم محصول یا لینکش رو بفرست:</b>\n\n"
+        "مثال‌ها:\n"
+        "• <code>ساک ورزشی</code> (جستجو با اسم)\n"
+        "• <code>https://www.digikala.com/product/dkp-22214723/</code>\n"
+        "  (افزودن مستقیم با لینک)",
         parse_mode="HTML", reply_markup=cancel_kb()
     )
 
@@ -325,7 +352,6 @@ async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # جستجو و نمایش
 # ============================================
 def _do_search(context):
-    """جستجو رو با فیلترهای فعلی انجام بده"""
     s = context.user_data.get("search", {})
     q = s.get("query")
     sort = s.get("sort", "relevance")
@@ -385,7 +411,6 @@ async def render_results(target, context, edit=False):
         except Exception:
             pass
 
-    # fallback - پیام جدید
     if hasattr(target, "message"):
         await target.message.reply_text(text, parse_mode="HTML", reply_markup=kb)
     else:
@@ -453,12 +478,84 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = context.user_data.get("state")
     text = update.message.text.strip() if update.message.text else ""
 
-    # ---------- منتظر اسم محصول ----------
+    # ---------- منتظر اسم یا لینک ----------
     if state == "waiting_name":
         if len(text) < 2:
             await update.message.reply_text("❌ کوتاهه. دوباره بفرست.")
             return
 
+        # ============ حالت ۱: کاربر لینک فرستاده ============
+        if text.startswith("http"):
+            msg = await update.message.reply_text("⏳ در حال دریافت اطلاعات از لینک...")
+
+            pid_str = extract_product_id(text)
+            if not pid_str:
+                await msg.edit_text(
+                    "❌ لینک معتبر نیست.\n"
+                    "لطفاً لینک دیجی‌کالا بفرست یا اسم محصول رو تایپ کن."
+                )
+                return
+
+            data = fetch_product_api(pid_str)
+            if not data:
+                await msg.edit_text("❌ نتونستم اطلاعات محصول رو بگیرم. دوباره امتحان کن.")
+                return
+
+            result = parse_api_response(data)
+            if not result:
+                await msg.edit_text("❌ قیمت محصول پیدا نشد.")
+                return
+
+            title, price = result
+            url = f"https://www.digikala.com/product/dkp-{pid_str}/"
+
+            # عکس
+            product_data = data.get("data", {}).get("product", {})
+            images = product_data.get("images", {}) or {}
+            main_img = images.get("main", {}) if isinstance(images, dict) else {}
+            img_urls = main_img.get("url", []) if isinstance(main_img, dict) else []
+            if isinstance(img_urls, str):
+                img_urls = [img_urls]
+            image = img_urls[0] if img_urls else None
+
+            product = {
+                "id": pid_str,
+                "title": title,
+                "url": url,
+                "price": price,
+                "image": image,
+            }
+            context.user_data["pending_product"] = product
+            context.user_data["state"] = "waiting_target"
+
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+
+            text_out = (
+                f"✅ <b>محصول پیدا شد:</b>\n\n"
+                f"📦 {esc(title)}\n"
+                f"💰 قیمت فعلی: <b>{price:,} تومان</b>\n\n"
+                f"🎯 <b>قیمت هدف</b> رو بفرست (تومان) یا /skip."
+            )
+
+            if image:
+                try:
+                    await update.message.reply_photo(
+                        photo=image, caption=text_out,
+                        parse_mode="HTML", reply_markup=cancel_kb()
+                    )
+                    return
+                except Exception as e:
+                    logger.warning(f"عکس: {e}")
+
+            await update.message.reply_text(
+                text_out, parse_mode="HTML", reply_markup=cancel_kb()
+            )
+            return
+
+        # ============ حالت ۲: کاربر اسم فرستاده (جستجو) ============
         msg = await update.message.reply_text("⏳ در حال جستجو (3 صفحه)...")
 
         results = search_products(text, limit=MAX_RESULTS, sort="relevance")
@@ -472,7 +569,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "results": results, "page": 0, "filters": {},
         }
         context.user_data["state"] = "browsing"
-        await msg.delete()
+        try:
+            await msg.delete()
+        except Exception:
+            pass
         await render_results(update, context, edit=False)
         return
 
@@ -496,7 +596,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.clear()
             return
 
-        pid = insert_product(product["url"], product["title"], target)
+        # پاس دادن price برای ذخیره قیمت اولیه
+        pid = insert_product(product["url"], product["title"], target,
+                             price=product.get("price"))
         if pid:
             target_str = f"{target:,} تومان" if target else "بدون هدف"
             price_str = f"{product.get('price', 0):,}" if product.get('price') else "?"
@@ -543,7 +645,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         return
 
-    # ---------- منتظر محدوده قیمت (برمی‌گرده به منوی فیلتر) ----------
+    # ---------- منتظر محدوده قیمت ----------
     if state == "waiting_price_range":
         if text == "/skip":
             f = context.user_data.get("search", {}).get("filters", {})
@@ -626,12 +728,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "waiting_name"
         try:
             await query.edit_message_text(
-                "🔍 <b>اسم محصول رو بفرست:</b>",
+                "🔍 <b>اسم محصول یا لینکش رو بفرست:</b>\n\n"
+                "• اسم: <code>ساک ورزشی</code>\n"
+                "• لینک: <code>https://www.digikala.com/product/dkp-22214723/</code>",
                 parse_mode="HTML", reply_markup=cancel_kb()
             )
         except Exception:
             await query.message.reply_text(
-                "🔍 <b>اسم محصول رو بفرست:</b>",
+                "🔍 <b>اسم محصول یا لینکش رو بفرست:</b>\n\n"
+                "• اسم: <code>ساک ورزشی</code>\n"
+                "• لینک: <code>https://www.digikala.com/product/dkp-22214723/</code>",
                 parse_mode="HTML", reply_markup=cancel_kb()
             )
         return
@@ -691,7 +797,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"filters menu: {e}")
         return
 
-    # ---------- فقط تخفیف‌دار (toggle) ----------
+    # ---------- فقط تخفیف‌دار ----------
     if data == "flt:disc":
         s = context.user_data.get("search", {})
         f = s.get("filters", {})
@@ -704,7 +810,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"flt:disc: {e}")
         return
 
-    # ---------- فقط موجود (toggle) ----------
+    # ---------- فقط موجود ----------
     if data == "flt:stock":
         s = context.user_data.get("search", {})
         f = s.get("filters", {})
@@ -804,13 +910,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await render_results(query, context, edit=True)
         return
 
-    # ---------- صفحه جزئیات (از نتایج) ----------
+    # ---------- صفحه جزئیات ----------
     if data.startswith("det:"):
         idx = int(data.split(":")[1])
         await render_detail(query, context, idx, from_list=False)
         return
 
-    # ---------- اطلاعات محصول (از لیست) ----------
+    # ---------- اطلاعات محصول ----------
     if data.startswith("info:"):
         pid = int(data.split(":")[1])
         product = get_product(pid)
@@ -847,6 +953,82 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                            reply_markup=kb, disable_web_page_preview=True)
         return
 
+        # ---------- مقایسه در ترب ----------
+    if data.startswith("torob:"):
+        idx = int(data.split(":")[1])
+        results = context.user_data.get("search", {}).get("results", [])
+        if idx >= len(results):
+            await query.message.reply_text("❌ خطا. دوباره /add بزن.")
+            return
+
+        product = results[idx]
+        title = product["title"]
+
+        msg = await query.message.reply_text(
+            f"🔍 در حال جستجو در ترب برای:\n«{esc(title[:50])}»..."
+        )
+
+        torob_results = search_torob(title, limit=5)
+
+        if not torob_results:
+            await msg.edit_text(
+                "❌ نتیجه‌ای در ترب پیدا نشد.\n"
+                "شاید عنوان خیلی خاصه. دوباره امتحان کن."
+            )
+            return
+
+        lines = [f"🏆 <b>مقایسه در ترب</b>\n"]
+        lines.append(f"📦 «{esc(title[:60])}»\n")
+
+        # ارزان‌ترین
+        valid = [r for r in torob_results if r.get("price")]
+        if valid:
+            cheapest = min(valid, key=lambda x: x["price"])
+            lines.append(f"💰 <b>ارزان‌ترین در ترب:</b> {cheapest['price']:,} تومان")
+            if cheapest.get("shop_text"):
+                lines.append(f"🏪 {esc(cheapest['shop_text'])}")
+            lines.append("")
+
+        # مقایسه با دیجی‌کالا
+        dk_price = product.get("price")
+        if dk_price and valid:
+            diff = cheapest["price"] - dk_price
+            if diff < 0:
+                lines.append(f"📉 <b>ترب {abs(diff):,} تومان ارزان‌تره!</b>")
+            elif diff > 0:
+                lines.append(f"📈 <b>دیجی‌کالا {abs(diff):,} تومان ارزان‌تره</b>")
+            else:
+                lines.append("🤝 <b>قیمت‌ها برابره</b>")
+            lines.append("")
+
+        lines.append("<b>نتایج برتر ترب:</b>\n")
+
+        kb = []
+        for i, r in enumerate(torob_results[:5], 1):
+            price_str = f"{r['price']:,}" if r.get("price") else "?"
+            lines.append(f"{i}. {esc(r['name'][:50])}")
+            lines.append(f"   💰 {price_str} تومان")
+            if r.get("shop_text"):
+                lines.append(f"   🏪 {esc(r['shop_text'])}")
+            if r.get("url"):
+                kb.append([InlineKeyboardButton(
+                    f"🛒 {i}. {r['name'][:32]} — {price_str} ت",
+                    url=r["url"]
+                )])
+
+        kb.append([InlineKeyboardButton("🔙 بازگشت به نتایج", callback_data="back_results")])
+
+        try:
+            await msg.edit_text(
+                "\n".join(lines),
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(kb),
+                disable_web_page_preview=True,
+            )
+        except Exception as e:
+            logger.error(f"torob edit: {e}")
+        return
+
     # ---------- افزودن به پایش ----------
     if data.startswith("add:"):
         idx = int(data.split(":")[1])
@@ -862,7 +1044,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "waiting_target"
 
         price_str = f"{product['price']:,}" if product.get('price') else "?"
-        # همیشه پیام جدید (چون ممکنه از روی عکس باشه)
         await query.message.reply_text(
             f"✅ <b>انتخاب شد:</b>\n\n"
             f"📦 {esc(product['title'])}\n"

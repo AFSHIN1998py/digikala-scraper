@@ -339,6 +339,64 @@ def parse_api_response(data: dict) -> tuple[str, int] | None:
         logger.error(f"❌ خطای پارس API: {e}")
         return None
 
+# ============================================
+# بخش ۴.۵: جستجوی ترب (مقایسه قیمت)
+# ============================================
+def search_torob(query: str, limit: int = 5) -> list[dict]:
+    """
+    جستجوی محصول در ترب (Torob)
+    از curl_cffi استفاده می‌کنه تا بلاک نشه
+    """
+    try:
+        from curl_cffi import requests as curl_requests
+    except ImportError:
+        logger.error("❌ curl_cffi نصب نیست. نصب کن: pip install curl_cffi")
+        return []
+
+    q = urllib.parse.quote(query)
+    url = f"https://api.torob.com/v4/base-product/search/?q={q}&page=0&size={limit}"
+
+    try:
+        r = curl_requests.get(url, impersonate="chrome", timeout=20)
+        if r.status_code != 200:
+            logger.warning(f"⚠️ ترب کد {r.status_code}")
+            return []
+
+        data = r.json()
+        products = data.get("results", []) or []
+
+        results = []
+        for p in products[:limit]:
+            random_key = p.get("random_key")
+            if not random_key:
+                continue
+
+            # قیمت (قبلاً به تومان)
+            price = p.get("price")
+            if price is not None:
+                try:
+                    price = int(price)
+                except (ValueError, TypeError):
+                    price = None
+
+            # URL کامل
+            rel_url = p.get("web_client_absolute_url", "")
+            full_url = f"https://torob.com{rel_url}" if rel_url else None
+
+            results.append({
+                "name": p.get("name1", "نامشخص"),
+                "price": price,
+                "price_text": p.get("price_text", ""),
+                "url": full_url,
+                "shop_text": p.get("shop_text", ""),
+                "random_key": random_key,
+            })
+
+        logger.info(f"🏆 ترب: {len(results)} نتیجه برای «{query}»")
+        return results
+    except Exception as e:
+        logger.error(f"❌ ترب: {e}")
+        return []
 
 # ============================================
 # بخش ۴: جستجوی محصول با اسم

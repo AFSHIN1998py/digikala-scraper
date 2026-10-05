@@ -8,7 +8,7 @@
 """
 import os
 import html
-import sqlite3
+import psycopg2
 import logging
 import threading
 import time
@@ -22,7 +22,7 @@ from telegram.ext import (
 
 from scraper import (
     search_products, search_torob, export_to_csv, init_db, monitor,
-    send_startup_message, DB_PATH, CSV_PATH, BOT_TOKEN,
+    send_startup_message, CSV_PATH, BOT_TOKEN,
     SORT_NAMES_FA, extract_product_id, fetch_product_api,
     parse_api_response,
 )
@@ -42,21 +42,23 @@ def esc(text) -> str:
 
 
 # ============================================
-# دیتابیس
+# دیتابیس (PostgreSQL / Neon)
 # ============================================
 def get_all_products() -> list[dict]:
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(os.getenv("DATABASE_URL"))
     c = conn.cursor()
-    rows = c.execute("""
+    c.execute("""
         SELECT product_id, url, title, target_price
         FROM products ORDER BY product_id DESC
-    """).fetchall()
+    """)
+    rows = c.fetchall()
     result = []
     for pid, url, title, target in rows:
-        last = c.execute("""
+        c.execute("""
             SELECT price FROM price_history
-            WHERE product_id = ? ORDER BY timestamp DESC LIMIT 1
-        """, (pid,)).fetchone()
+            WHERE product_id = %s ORDER BY timestamp DESC LIMIT 1
+        """, (pid,))
+        last = c.fetchone()
         result.append({
             "id": pid, "url": url, "title": title,
             "target": target,
@@ -67,24 +69,27 @@ def get_all_products() -> list[dict]:
 
 
 def get_product(product_id: int) -> dict | None:
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(os.getenv("DATABASE_URL"))
     c = conn.cursor()
-    row = c.execute("""
+    c.execute("""
         SELECT product_id, url, title, target_price
-        FROM products WHERE product_id = ?
-    """, (product_id,)).fetchone()
+        FROM products WHERE product_id = %s
+    """, (product_id,))
+    row = c.fetchone()
     if not row:
         conn.close()
         return None
     pid, url, title, target = row
-    last = c.execute("""
+    c.execute("""
         SELECT price FROM price_history
-        WHERE product_id = ? ORDER BY timestamp DESC LIMIT 1
-    """, (pid,)).fetchone()
-    history = c.execute("""
+        WHERE product_id = %s ORDER BY timestamp DESC LIMIT 1
+    """, (pid,))
+    last = c.fetchone()
+    c.execute("""
         SELECT price, timestamp FROM price_history
-        WHERE product_id = ? ORDER BY timestamp DESC LIMIT 5
-    """, (pid,)).fetchall()
+        WHERE product_id = %s ORDER BY timestamp DESC LIMIT 5
+    """, (pid,))
+    history = c.fetchall()
     conn.close()
     return {
         "id": pid, "url": url, "title": title, "target": target,
@@ -94,28 +99,28 @@ def get_product(product_id: int) -> dict | None:
 
 
 def delete_product(product_id: int) -> bool:
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(os.getenv("DATABASE_URL"))
     c = conn.cursor()
     try:
-        c.execute("DELETE FROM price_history WHERE product_id = ?", (product_id,))
-        c.execute("DELETE FROM products WHERE product_id = ?", (product_id,))
+        c.execute("DELETE FROM price_history WHERE product_id = %s", (product_id,))
+        c.execute("DELETE FROM products WHERE product_id = %s", (product_id,))
         conn.commit()
         return True
-    except sqlite3.Error:
+    except psycopg2.Error:
         return False
     finally:
         conn.close()
 
 
 def update_target_price(product_id: int, target: int) -> bool:
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(os.getenv("DATABASE_URL"))
     c = conn.cursor()
     try:
-        c.execute("UPDATE products SET target_price = ? WHERE product_id = ?",
+        c.execute("UPDATE products SET target_price = %s WHERE product_id = %s",
                   (target, product_id))
         conn.commit()
         return True
-    except sqlite3.Error:
+    except psycopg2.Error:
         return False
     finally:
         conn.close()
@@ -123,33 +128,41 @@ def update_target_price(product_id: int, target: int) -> bool:
 
 def insert_product(url: str, title: str, target: int = 0, price: int = None) -> int | None:
     """اضافه کردن محصول + ذخیره قیمت اولیه اگه داشتیم"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(os.getenv("DATABASE_URL"))
     c = conn.cursor()
     try:
         c.execute("""
-            INSERT OR IGNORE INTO products (url, title, target_price, created_at)
-            VALUES (?, ?, ?, ?)
-        """, (url, title, target, datetime.now().isoformat()))
+            INSERT INTO products (url, title, target_price, created_at)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (url) DO NOTHING
+            RETURNING product_id
+        """, (url, title, target, datetime.now()))
+        result = c.fetchone()
         conn.commit()
 
-        row = c.execute("SELECT product_id FROM products WHERE url = ?", (url,)).fetchone()
-        pid = row[0] if row else None
+        if result:
+            pid = result[0]
+        else:
+            c.execute("SELECT product_id FROM products WHERE url = %s", (url,))
+            row = c.fetchone()
+            pid = row[0] if row else None
 
-        # ذخیره قیمت اولیه اگه داشتیم (فقط برای محصول جدید)
+        # ذخیره قیمت اولیه (فقط برای محصول جدید)
         if pid and price:
-            existing = c.execute("""
-                SELECT COUNT(*) FROM price_history WHERE product_id = ?
-            """, (pid,)).fetchone()[0]
+            c.execute("""
+                SELECT COUNT(*) FROM price_history WHERE product_id = %s
+            """, (pid,))
+            existing = c.fetchone()[0]
             if existing == 0:
                 c.execute("""
                     INSERT INTO price_history (product_id, price, timestamp)
-                    VALUES (?, ?, ?)
-                """, (pid, price, datetime.now().isoformat()))
+                    VALUES (%s, %s, %s)
+                """, (pid, price, datetime.now()))
                 conn.commit()
                 logger.info(f"💰 قیمت اولیه ذخیره شد: {price:,} برای {title[:30]}")
 
         return pid
-    except sqlite3.Error as e:
+    except psycopg2.Error as e:
         logger.error(f"DB: {e}")
         return None
     finally:
@@ -968,7 +981,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔍 در حال جستجو در ترب برای:\n«{esc(title[:50])}»..."
         )
 
-        torob_results = search_torob(title, limit=5)
+        torob_results = search_torob(title, limit=10)
 
         if not torob_results:
             await msg.edit_text(
@@ -1001,10 +1014,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lines.append("🤝 <b>قیمت‌ها برابره</b>")
             lines.append("")
 
-        lines.append("<b>نتایج برتر ترب:</b>\n")
+            lines.append(f"<b>نتایج برتر ترب ({len(torob_results)}):</b>\n")
 
         kb = []
-        for i, r in enumerate(torob_results[:5], 1):
+        for i, r in enumerate(torob_results[:10], 1):
             price_str = f"{r['price']:,}" if r.get("price") else "?"
             lines.append(f"{i}. {esc(r['name'][:50])}")
             lines.append(f"   💰 {price_str} تومان")

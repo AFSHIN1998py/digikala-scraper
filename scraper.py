@@ -10,6 +10,7 @@
 - ذخیره در SQLite
 """
 
+import psycopg2
 import os
 import sys
 import csv
@@ -104,26 +105,25 @@ def get_headers() -> dict:
 # ============================================
 def init_db():
     """ساخت جدول‌ها اگه وجود نداشته باشه"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(os.getenv("DATABASE_URL"))
     c = conn.cursor()
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS products (
-            product_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id SERIAL PRIMARY KEY,
             url TEXT UNIQUE,
             title TEXT,
             target_price INTEGER DEFAULT 0,
-            created_at TEXT
+            created_at TIMESTAMP
         )
     """)
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS price_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            product_id INTEGER,
+            id SERIAL PRIMARY KEY,
+            product_id INTEGER REFERENCES products(product_id),
             price INTEGER,
-            timestamp TEXT,
-            FOREIGN KEY (product_id) REFERENCES products(product_id)
+            timestamp TIMESTAMP
         )
     """)
 
@@ -132,19 +132,26 @@ def init_db():
 
 
 def add_product(url: str, title: str, target_price: int = 0) -> int | None:
-    """اضافه کردن محصول به دیتابیس و برگرداندن ID"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(os.getenv("DATABASE_URL"))
     c = conn.cursor()
     try:
         c.execute("""
-            INSERT OR IGNORE INTO products (url, title, target_price, created_at)
-            VALUES (?, ?, ?, ?)
-        """, (url, title, target_price, datetime.now().isoformat()))
+            INSERT INTO products (url, title, target_price, created_at)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (url) DO NOTHING
+            RETURNING product_id
+        """, (url, title, target_price, datetime.now()))
+        result = c.fetchone()
         conn.commit()
-
-        row = c.execute("SELECT product_id FROM products WHERE url = ?", (url,)).fetchone()
+        
+        if result:
+            return result[0]
+        
+        # اگه محصول از قبل بود، ID رو بگیر
+        c.execute("SELECT product_id FROM products WHERE url = %s", (url,))
+        row = c.fetchone()
         return row[0] if row else None
-    except sqlite3.Error as e:
+    except psycopg2.Error as e:
         logger.error(f"DB Error: {e}")
         return None
     finally:
@@ -152,43 +159,43 @@ def add_product(url: str, title: str, target_price: int = 0) -> int | None:
 
 
 def save_price(product_id: int, price: int):
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(os.getenv("DATABASE_URL"))
     c = conn.cursor()
     try:
         c.execute("""
             INSERT INTO price_history (product_id, price, timestamp)
-            VALUES (?, ?, ?)
-        """, (product_id, price, datetime.now().isoformat()))
+            VALUES (%s, %s, %s)
+        """, (product_id, price, datetime.now()))
         conn.commit()
-    except sqlite3.Error as e:
+    except psycopg2.Error as e:
         logger.error(f"DB Error: {e}")
     finally:
         conn.close()
 
 
 def get_last_price(product_id: int) -> int | None:
-    """آخرین قیمت ثبت‌شده"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(os.getenv("DATABASE_URL"))
     c = conn.cursor()
-    row = c.execute("""
+    c.execute("""
         SELECT price FROM price_history
-        WHERE product_id = ?
+        WHERE product_id = %s
         ORDER BY timestamp DESC LIMIT 1
-    """, (product_id,)).fetchone()
+    """, (product_id,))
+    row = c.fetchone()
     conn.close()
     return row[0] if row else None
 
 
 def export_to_csv():
-    """خروجی اکسل از همه تاریخچه"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(os.getenv("DATABASE_URL"))
     c = conn.cursor()
-    rows = c.execute("""
+    c.execute("""
         SELECT p.title, p.url, ph.price, ph.timestamp
         FROM price_history ph
         JOIN products p ON p.product_id = ph.product_id
         ORDER BY ph.timestamp DESC
-    """).fetchall()
+    """)
+    rows = c.fetchall()
     conn.close()
 
     with open(CSV_PATH, "w", newline="", encoding="utf-8-sig") as f:
@@ -197,7 +204,6 @@ def export_to_csv():
         writer.writerows(rows)
 
     logger.info(f"✅ خروجی CSV ذخیره شد: {CSV_PATH}")
-
 
 # ============================================
 # بخش ۳: اسکرپینگ (API v2 دیجی‌کالا)

@@ -952,9 +952,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append("\n📈 <b>تاریخچه:</b>")
             for price, ts in product['history'][:5]:
                 try:
-                    dt = datetime.fromisoformat(ts).strftime("%m/%d %H:%M")
+                    # اگه ts از نوع datetime بود (PostgreSQL)
+                    if hasattr(ts, "strftime"):
+                        dt = ts.strftime("%m/%d %H:%M")
+                    else:
+                        # اگه string بود (SQLite قدیمی)
+                        dt = datetime.fromisoformat(str(ts)).strftime("%m/%d %H:%M")
                 except Exception:
-                    dt = ts[:16]
+                    dt = str(ts)[:16]
                 lines.append(f"  • {price:,} ت ({dt})")
 
         kb = InlineKeyboardMarkup([

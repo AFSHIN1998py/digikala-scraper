@@ -22,7 +22,7 @@ from telegram.ext import (
 
 from scraper import (
     search_products, search_torob, export_to_csv, init_db, monitor,
-    send_startup_message, CSV_PATH, BOT_TOKEN,
+    send_startup_message, send_daily_report, CSV_PATH, BOT_TOKEN,
     SORT_NAMES_FA, extract_product_id, fetch_product_api,
     parse_api_response,
 )
@@ -307,6 +307,10 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await update.message.reply_text("✅ لغو شد.", reply_markup=main_menu_kb())
 
+async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ارسال گزارش فوری (برای تست)"""
+    await update.message.reply_text("⏳ در حال ساخت گزارش...")
+    send_daily_report()
 
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
@@ -1114,6 +1118,44 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================
+# گزارش روزانه (Thread جدا)
+# ============================================
+def daily_report_thread():
+    """هر روز ساعت مشخص، گزارش می‌فرسته"""
+    from datetime import timezone, timedelta
+
+    TEHRAN_TZ = timezone(timedelta(hours=3, minutes=30))
+
+    # ساعت گزارش (به وقت تهران) — از env یا پیش‌فرض ۲۱
+    report_hour = int(os.getenv("REPORT_HOUR", "21"))
+    report_minute = int(os.getenv("REPORT_MINUTE", "0"))
+
+    logger.info(f"📊 گزارش روزانه تنظیم شد برای {report_hour}:{report_minute:02d} تهران")
+
+    while True:
+        try:
+            now = datetime.now(TEHRAN_TZ)
+            target = now.replace(
+                hour=report_hour,
+                minute=report_minute,
+                second=0,
+                microsecond=0,
+            )
+            if target <= now:
+                target += timedelta(days=1)
+
+            wait_sec = (target - now).total_seconds()
+            logger.info(f"📊 گزارش بعدی: {target.strftime('%Y-%m-%d %H:%M')} "
+                        f"(تا {wait_sec/3600:.1f} ساعت دیگه)")
+
+            time.sleep(wait_sec)
+
+            send_daily_report()
+        except Exception as e:
+            logger.error(f"Report thread: {e}")
+            time.sleep(3600)
+
+# ============================================
 # اسکرپر پس‌زمینه
 # ============================================
 def run_scraper_in_background():
@@ -1135,12 +1177,18 @@ def main():
     t.start()
     logger.info("✅ اسکرپر شروع شد.")
 
+    # گزارش روزانه
+    report_thread = threading.Thread(target=daily_report_thread, daemon=True)
+    report_thread.start()
+    logger.info("✅ گزارش روزانه فعال شد.")
+
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CommandHandler("add", cmd_add))
     app.add_handler(CommandHandler("list", cmd_list))
+    app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CommandHandler("export", cmd_export))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))

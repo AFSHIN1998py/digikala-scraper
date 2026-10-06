@@ -16,7 +16,6 @@ import sys
 import csv
 import time
 import random
-import sqlite3
 import logging
 import argparse
 import urllib.parse
@@ -35,12 +34,10 @@ CHAT_ID = os.getenv("CHAT_ID", "").strip()
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "21600"))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "2"))
 PROXY_URL = os.getenv("PROXY_URL", "").strip() or None
-DB_PATH = os.getenv("DB_PATH", "data/prices.db")
 CSV_PATH = os.getenv("CSV_PATH", "data/prices.csv")
 LOG_PATH = os.getenv("LOG_PATH", "data/scraper.log")
 
-# ساخت پوشه data اگه وجود نداره
-Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+# اطمینان از وجود پوشه log
 Path(LOG_PATH).parent.mkdir(parents=True, exist_ok=True)
 
 # ---------- لاگ‌گیری حرفه‌ای ----------
@@ -105,7 +102,11 @@ def get_headers() -> dict:
 # ============================================
 def init_db():
     """ساخت جدول‌ها اگه وجود نداشته باشه"""
-    conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        logger.error("❌ DATABASE_URL تنظیم نشده!")
+        return
+    conn = psycopg2.connect(db_url)    
     c = conn.cursor()
 
     c.execute("""
@@ -683,13 +684,21 @@ def load_urls_from_file(path: str) -> list[tuple[str, int]]:
 
 
 def load_products_from_db() -> list[tuple[str, int]]:
-    """خوندن محصولات از دیتابیس"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    rows = c.execute("SELECT url, target_price FROM products").fetchall()
-    conn.close()
-    return [(url, target) for url, target in rows if url]
-
+    """خوندن محصولات از دیتابیس PostgreSQL"""
+    try:
+        db_url = os.getenv("DATABASE_URL")
+        if not db_url:
+            logger.error("❌ DATABASE_URL تنظیم نشده!")
+            return []
+        conn = psycopg2.connect(db_url)
+        c = conn.cursor()
+        c.execute("SELECT url, target_price FROM products")
+        rows = c.fetchall()
+        conn.close()
+        return [(url, target) for url, target in rows if url]
+    except Exception as e:
+        logger.error(f"DB load error: {e}")
+        return []
 
 def monitor(urls_file: str, once: bool = False):
     """حلقه اصلی پایش - هر چرخه از DB و urls.txt می‌خونه"""

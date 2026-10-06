@@ -583,6 +583,102 @@ def send_startup_message():
 
 
 # ============================================
+# بخش ۵.۵: گزارش روزانه
+# ============================================
+def get_daily_report() -> str | None:
+    """ساخت متن گزارش روزانه"""
+    try:
+        conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+        c = conn.cursor()
+
+        c.execute("""
+            SELECT product_id, title, url, target_price
+            FROM products ORDER BY product_id DESC
+        """)
+        products = c.fetchall()
+
+        if not products:
+            conn.close()
+            return None
+
+        lines = ["📊 <b>گزارش روزانه قیمت‌ها</b>", ""]
+
+        cheaper = pricier = same = hit_target = 0
+
+        for pid, title, url, target in products:
+            # دو رکورد آخر
+            c.execute("""
+                SELECT price FROM price_history
+                WHERE product_id = %s ORDER BY timestamp DESC LIMIT 2
+            """, (pid,))
+            records = c.fetchall()
+
+            if not records:
+                continue
+
+            last_price = records[0][0]
+
+            # مقایسه با رکورد قبلی
+            if len(records) >= 2 and records[1][0] != last_price:
+                prev = records[1][0]
+                diff = last_price - prev
+                percent = (diff / prev) * 100 if prev else 0
+                if diff < 0:
+                    emoji = "🔻"
+                    change = f"{abs(diff):,}- ({abs(percent):.1f}%)"
+                    cheaper += 1
+                else:
+                    emoji = "🔺"
+                    change = f"{diff:,}+ ({percent:.1f}%)"
+                    pricier += 1
+            else:
+                emoji = "➡️"
+                change = "بدون تغییر"
+                same += 1
+
+            # چک قیمت هدف
+            target_str = ""
+            if target and last_price <= target:
+                target_str = " ✅ به هدف رسید!"
+                hit_target += 1
+
+            title_short = title[:45] if len(title) > 45 else title
+
+            lines.append(f"{emoji} <b>{title_short}</b>")
+            lines.append(f"   💰 {last_price:,} تومان — {change}{target_str}")
+            lines.append("")
+
+        conn.close()
+
+        # خلاصه
+        lines.append("━━━━━━━━━━━━━━━━")
+        lines.append("📈 <b>خلاصه:</b>")
+        if cheaper: lines.append(f"🔻 {cheaper} ارزان‌تر")
+        if pricier: lines.append(f"🔺 {pricier} گران‌تر")
+        if same:    lines.append(f"➡️ {same} بدون تغییر")
+        if hit_target: lines.append(f"🎯 {hit_target} به هدف رسید")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"Daily report error: {e}")
+        return None
+
+
+def send_daily_report():
+    """ساخت و ارسال گزارش روزانه"""
+    logger.info("📊 ساخت گزارش روزانه...")
+    report = get_daily_report()
+    if not report:
+        send_telegram("📊 گزارش روزانه:\n\nمحصولی برای گزارش وجود نداره.")
+        return
+    success = send_telegram(report)
+    if success:
+        logger.info("✅ گزارش روزانه ارسال شد.")
+    else:
+        logger.error("❌ ارسال گزارش روزانه ناموفق!")
+
+# ============================================
 # بخش ۶: منطق اصلی
 # ============================================
 def check_product(url: str, target_price: int = 0) -> dict | None:

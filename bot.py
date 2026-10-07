@@ -936,6 +936,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ---------- اطلاعات محصول ----------
     if data.startswith("info:"):
         pid = int(data.split(":")[1])
+        logger.info(f"🎯 INFO HANDLER CALLED for pid={pid}")   # ← این خط رو اضافه کن
         product = get_product(pid)
         if not product:
             await query.message.reply_text("❌ پیدا نشد.")

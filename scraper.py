@@ -160,9 +160,23 @@ def add_product(url: str, title: str, target_price: int = 0) -> int | None:
 
 
 def save_price(product_id: int, price: int):
+    """ذخیره قیمت — فقط اگه با آخرین قیمت فرق داشته باشه"""
     conn = psycopg2.connect(os.getenv("DATABASE_URL"))
     c = conn.cursor()
     try:
+        # آخرین قیمت ذخیره‌شده رو بگیر
+        c.execute("""
+            SELECT price FROM price_history
+            WHERE product_id = %s
+            ORDER BY timestamp DESC LIMIT 1
+        """, (product_id,))
+        row = c.fetchone()
+
+        # اگه قیمت عوض نشده، ذخیره نکن
+        if row and row[0] == price:
+            return
+
+        # ذخیره قیمت جدید (اولین بار یا تغییر)
         c.execute("""
             INSERT INTO price_history (product_id, price, timestamp)
             VALUES (%s, %s, %s)
@@ -172,7 +186,6 @@ def save_price(product_id: int, price: int):
         logger.error(f"DB Error: {e}")
     finally:
         conn.close()
-
 
 def get_last_price(product_id: int) -> int | None:
     conn = psycopg2.connect(os.getenv("DATABASE_URL"))
@@ -202,9 +215,20 @@ def export_to_csv():
     with open(CSV_PATH, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
         writer.writerow(["عنوان", "لینک", "قیمت", "زمان"])
-        writer.writerows(rows)
+        for title, url, price, ts in rows:
+            # فرمت‌دهی به زمان
+            try:
+                if hasattr(ts, "strftime"):
+                    time_str = ts.strftime("%Y-%m-%d %H:%M")
+                else:
+                    time_str = str(ts)[:16]
+            except Exception:
+                time_str = str(ts)
+
+            writer.writerow([title, url, price, time_str])
 
     logger.info(f"✅ خروجی CSV ذخیره شد: {CSV_PATH}")
+
 
 # ============================================
 # بخش ۳: اسکرپینگ (API v2 دیجی‌کالا)

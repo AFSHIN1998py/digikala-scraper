@@ -18,6 +18,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ContextTypes,
+    TypeHandler, ApplicationHandlerStop,
 )
 
 from scraper import (
@@ -1159,6 +1160,59 @@ def daily_report_thread():
             logger.error(f"Report thread: {e}")
             time.sleep(3600)
 
+
+# ============================================
+# محدودسازی ربات (فقط کاربر مجاز)
+# ============================================
+def get_authorized_chat_id() -> int | None:
+    """Chat ID مجاز رو از env می‌خونه"""
+    try:
+        raw = os.getenv("CHAT_ID", "").strip()
+        return int(raw) if raw else None
+    except (ValueError, TypeError):
+        logger.error("⚠️ CHAT_ID معتبر نیست!")
+        return None
+
+
+async def check_authorization(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    قبل از هر handler اجرا می‌شه.
+    اگه کاربر مجاز نباشه، پیام می‌ده و متوقف می‌کنه.
+    """
+    authorized_id = get_authorized_chat_id()
+    if not authorized_id:
+        # اگه CHAT_ID ست نشده، ربات رو آزاد بذار (برای دموی سریع)
+        return
+
+    user = update.effective_user
+    if not user:
+        raise ApplicationHandlerStop
+
+    if user.id == authorized_id:
+        return  # مجاز، ادامه بده
+
+    # ⛔️ کاربر غیرمجاز
+    logger.warning(f"⛔️ دسترسی غیرمجاز: user_id={user.id}, username=@{user.username}")
+
+    msg = (
+        "⛔️ <b>این ربات خصوصی است</b>\n\n"
+        "این نسخه فقط برای مالک ربات فعاله.\n"
+        "اگه می‌خوای ربات اختصاصی خودت رو داشته باشی، به ما پیام بده:\n\n"
+        "📩 @AFSHIN77AM"
+    )
+
+    try:
+        if update.message:
+            await update.message.reply_text(msg, parse_mode="HTML")
+        elif update.callback_query:
+            await update.callback_query.answer(
+                "⛔️ این ربات خصوصی است", show_alert=True
+            )
+    except Exception as e:
+        logger.error(f"Authorization reply error: {e}")
+
+    raise ApplicationHandlerStop
+
 # ============================================
 # اسکرپر پس‌زمینه
 # ============================================
@@ -1187,6 +1241,7 @@ def main():
     logger.info("✅ گزارش روزانه فعال شد.")
 
     app = Application.builder().token(BOT_TOKEN).build()
+    app.add_handler(TypeHandler(Update, check_authorization), group=-1)
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("cancel", cmd_cancel))

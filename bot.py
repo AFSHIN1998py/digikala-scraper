@@ -37,6 +37,56 @@ logger = logging.getLogger("bot")
 PAGE_SIZE = 10
 MAX_RESULTS = 60
 
+# ============================================
+# تنظیمات پلن‌ها و توابع کاربران
+# ============================================
+PLAN_LIMITS = {
+    "basic": 5,
+    "pro": 15,
+    "business": 30,
+}
+
+PLAN_NAMES_FA = {
+    "basic": "پایه (۵ محصول)",
+    "pro": "حرفه‌ای (۱۵ محصول)",
+    "business": "سازمانی (۳۰ محصول)",
+}
+
+def get_user(user_id: int) -> dict | None:
+    conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+    c = conn.cursor()
+    c.execute("SELECT user_id, plan, is_active FROM users WHERE user_id = %s", (user_id,))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return {"user_id": row[0], "plan": row[1], "is_active": row[2]}
+    return None
+
+def add_user(user_id: int, plan: str = "basic"):
+    conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO users (user_id, chat_id, plan, is_active) 
+        VALUES (%s, %s, %s, TRUE) 
+        ON CONFLICT (user_id) DO NOTHING
+    """, (user_id, user_id, plan))
+    conn.commit()
+    conn.close()
+
+def get_all_users() -> list[dict]:
+    conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+    c = conn.cursor()
+    c.execute("SELECT user_id, plan, is_active FROM users ORDER BY created_at DESC")
+    rows = c.fetchall()
+    conn.close()
+    return [{"user_id": r[0], "plan": r[1], "is_active": r[2]} for r in rows]
+
+def update_user_plan(user_id: int, plan: str):
+    conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+    c = conn.cursor()
+    c.execute("UPDATE users SET plan = %s WHERE user_id = %s", (plan, user_id))
+    conn.commit()
+    conn.close()
 
 def esc(text) -> str:
     return html.escape(str(text)) if text else ""
@@ -45,66 +95,51 @@ def esc(text) -> str:
 # ============================================
 # دیتابیس (PostgreSQL / Neon)
 # ============================================
-def get_all_products() -> list[dict]:
+
+def get_all_products(user_id: int) -> list[dict]:
     conn = psycopg2.connect(os.getenv("DATABASE_URL"))
     c = conn.cursor()
     c.execute("""
         SELECT product_id, url, title, target_price
-        FROM products ORDER BY product_id DESC
-    """)
+        FROM products WHERE user_id = %s ORDER BY product_id DESC
+    """, (user_id,))
     rows = c.fetchall()
     result = []
     for pid, url, title, target in rows:
-        c.execute("""
-            SELECT price FROM price_history
-            WHERE product_id = %s ORDER BY timestamp DESC LIMIT 1
-        """, (pid,))
+        c.execute("SELECT price FROM price_history WHERE product_id = %s ORDER BY timestamp DESC LIMIT 1", (pid,))
         last = c.fetchone()
         result.append({
             "id": pid, "url": url, "title": title,
-            "target": target,
-            "last_price": last[0] if last else None,
+            "target": target, "last_price": last[0] if last else None,
         })
     conn.close()
     return result
 
 
-def get_product(product_id: int) -> dict | None:
+def get_product(product_id: int, user_id: int) -> dict | None:
     conn = psycopg2.connect(os.getenv("DATABASE_URL"))
     c = conn.cursor()
-    c.execute("""
-        SELECT product_id, url, title, target_price
-        FROM products WHERE product_id = %s
-    """, (product_id,))
+    # چک میکنیم محصول مال همین کاربر باشه
+    c.execute("SELECT product_id, url, title, target_price FROM products WHERE product_id = %s AND user_id = %s", (product_id, user_id))
     row = c.fetchone()
     if not row:
         conn.close()
         return None
     pid, url, title, target = row
-    c.execute("""
-        SELECT price FROM price_history
-        WHERE product_id = %s ORDER BY timestamp DESC LIMIT 1
-    """, (pid,))
+    c.execute("SELECT price FROM price_history WHERE product_id = %s ORDER BY timestamp DESC LIMIT 1", (pid,))
     last = c.fetchone()
-    c.execute("""
-        SELECT price, timestamp FROM price_history
-        WHERE product_id = %s ORDER BY timestamp DESC LIMIT 5
-    """, (pid,))
+    c.execute("SELECT price, timestamp FROM price_history WHERE product_id = %s ORDER BY timestamp DESC LIMIT 5", (pid,))
     history = c.fetchall()
     conn.close()
-    return {
-        "id": pid, "url": url, "title": title, "target": target,
-        "last_price": last[0] if last else None,
-        "history": history,
-    }
+    return {"id": pid, "url": url, "title": title, "target": target, "last_price": last[0] if last else None, "history": history}
 
 
-def delete_product(product_id: int) -> bool:
+def delete_product(product_id: int, user_id: int) -> bool:
     conn = psycopg2.connect(os.getenv("DATABASE_URL"))
     c = conn.cursor()
     try:
         c.execute("DELETE FROM price_history WHERE product_id = %s", (product_id,))
-        c.execute("DELETE FROM products WHERE product_id = %s", (product_id,))
+        c.execute("DELETE FROM products WHERE product_id = %s AND user_id = %s", (product_id, user_id))
         conn.commit()
         return True
     except psycopg2.Error:
@@ -113,12 +148,11 @@ def delete_product(product_id: int) -> bool:
         conn.close()
 
 
-def update_target_price(product_id: int, target: int) -> bool:
+def update_target_price(product_id: int, target: int, user_id: int) -> bool:
     conn = psycopg2.connect(os.getenv("DATABASE_URL"))
     c = conn.cursor()
     try:
-        c.execute("UPDATE products SET target_price = %s WHERE product_id = %s",
-                  (target, product_id))
+        c.execute("UPDATE products SET target_price = %s WHERE product_id = %s AND user_id = %s", (target, product_id, user_id))
         conn.commit()
         return True
     except psycopg2.Error:
@@ -127,45 +161,43 @@ def update_target_price(product_id: int, target: int) -> bool:
         conn.close()
 
 
-def insert_product(url: str, title: str, target: int = 0, price: int = None) -> int | None:
-    """اضافه کردن محصول + ذخیره قیمت اولیه اگه داشتیم"""
+def insert_product(url: str, title: str, target: int, price: int, user_id: int) -> tuple[bool, str]:
     conn = psycopg2.connect(os.getenv("DATABASE_URL"))
     c = conn.cursor()
     try:
+        # چک کردن محدودیت پلن
+        user = get_user(user_id)
+        if not user: return False, "کاربر یافت نشد."
+        
+        c.execute("SELECT COUNT(*) FROM products WHERE user_id = %s", (user_id,))
+        current_count = c.fetchone()[0]
+        limit = PLAN_LIMITS.get(user["plan"], 5)
+        
+        if current_count >= limit:
+            return False, f"محدودیت پلن شما ({limit} محصول) پر شده است."
+
         c.execute("""
-            INSERT INTO products (url, title, target_price, created_at)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (url) DO NOTHING
-            RETURNING product_id
-        """, (url, title, target, datetime.now()))
+            INSERT INTO products (url, title, target_price, created_at, user_id)
+            VALUES (%s, %s, %s, %s, %s) ON CONFLICT (url) DO NOTHING RETURNING product_id
+        """, (url, title, target, datetime.now(), user_id))
         result = c.fetchone()
         conn.commit()
 
         if result:
             pid = result[0]
         else:
-            c.execute("SELECT product_id FROM products WHERE url = %s", (url,))
+            c.execute("SELECT product_id FROM products WHERE url = %s AND user_id = %s", (url, user_id))
             row = c.fetchone()
             pid = row[0] if row else None
 
-        # ذخیره قیمت اولیه (فقط برای محصول جدید)
         if pid and price:
-            c.execute("""
-                SELECT COUNT(*) FROM price_history WHERE product_id = %s
-            """, (pid,))
-            existing = c.fetchone()[0]
-            if existing == 0:
-                c.execute("""
-                    INSERT INTO price_history (product_id, price, timestamp)
-                    VALUES (%s, %s, %s)
-                """, (pid, price, datetime.now()))
+            c.execute("SELECT COUNT(*) FROM price_history WHERE product_id = %s", (pid,))
+            if c.fetchone()[0] == 0:
+                c.execute("INSERT INTO price_history (product_id, price, timestamp) VALUES (%s, %s, %s)", (pid, price, datetime.now()))
                 conn.commit()
-                logger.info(f"💰 قیمت اولیه ذخیره شد: {price:,} برای {title[:30]}")
-
-        return pid
+        return True, "OK"
     except psycopg2.Error as e:
-        logger.error(f"DB: {e}")
-        return None
+        return False, f"خطای دیتابیس: {e}"
     finally:
         conn.close()
 
@@ -313,6 +345,22 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ در حال ساخت گزارش...")
     send_daily_report()
 
+async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != int(os.getenv("CHAT_ID", "0")):
+        return
+        
+    users = get_all_users()
+    text = "👑 <b>پنل مدیریت</b>\n\n"
+    for u in users:
+        status = "✅" if u["is_active"] else "❌"
+        text += f"{status} <code>{u['user_id']}</code> - {PLAN_NAMES_FA.get(u['plan'], u['plan'])}\n"
+    
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ افزودن کاربر", callback_data="admin:add")],
+        [InlineKeyboardButton("🔙 منوی اصلی", callback_data="menu:main")]
+    ])
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=kb)
+
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     context.user_data["state"] = "waiting_name"
@@ -327,7 +375,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    products = get_all_products()
+    products = get_all_products(user_id=update.effective_user.id)
     if not products:
         await update.message.reply_text("📭 محصولی نداری. /add بزن.",
                                         reply_markup=main_menu_kb())
@@ -615,9 +663,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # پاس دادن price برای ذخیره قیمت اولیه
-        pid = insert_product(product["url"], product["title"], target,
-                             price=product.get("price"))
-        if pid:
+        success, msg = insert_product(product["url"], product["title"], target, product.get("price"), user_id=update.effective_user.id)
+        if success:
             target_str = f"{target:,} تومان" if target else "بدون هدف"
             price_str = f"{product.get('price', 0):,}" if product.get('price') else "?"
             await update.message.reply_text(
@@ -629,8 +676,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML", reply_markup=main_menu_kb()
             )
         else:
-            await update.message.reply_text("❌ خطا در ذخیره.",
-                                            reply_markup=main_menu_kb())
+            await update.message.reply_text(f"❌ {msg}", reply_markup=main_menu_kb())
         context.user_data.clear()
         return
 
@@ -654,7 +700,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ فقط عدد یا /skip.")
                 return
 
-        if update_target_price(pid, target):
+        if update_target_price(pid, target, user_id=update.effective_user.id):
             target_str = f"{target:,} تومان" if target else "بدون هدف"
             await update.message.reply_text(f"✅ هدف: {target_str}",
                                             reply_markup=main_menu_kb())
@@ -938,7 +984,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("info:"):
         pid = int(data.split(":")[1])
         logger.info(f"🎯 INFO HANDLER CALLED for pid={pid}")   # ← این خط رو اضافه کن
-        product = get_product(pid)
+        product = get_product(pid, user_id=update.effective_user.id)
         if not product:
             await query.message.reply_text("❌ پیدا نشد.")
             return
@@ -1108,7 +1154,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("delc:"):
         pid = int(data.split(":")[1])
-        if delete_product(pid):
+        if delete_product(pid, user_id=update.effective_user.id):
             try:
                 await query.edit_message_text(
                     "✅ حذف شد.",
@@ -1175,43 +1221,31 @@ def get_authorized_chat_id() -> int | None:
 
 
 async def check_authorization(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    قبل از هر handler اجرا می‌شه.
-    اگه کاربر مجاز نباشه، پیام می‌ده و متوقف می‌کنه.
-    """
-    authorized_id = get_authorized_chat_id()
-    if not authorized_id:
-        # اگه CHAT_ID ست نشده، ربات رو آزاد بذار (برای دموی سریع)
+    user = update.effective_user
+    if not user: return
+
+    owner_id = int(os.getenv("CHAT_ID", "0"))
+    
+    # ادمین (تو) همیشه دسترسی داره
+    if user.id == owner_id:
         return
 
-    user = update.effective_user
-    if not user:
+    db_user = get_user(user.id)
+    if not db_user or not db_user["is_active"]:
+        msg = (
+            "⛔️ <b>دسترسی غیرمجاز</b>\n\n"
+            "شما در سیستم ثبت نشده‌اید یا اشتراکتان غیرفعال است.\n"
+            "برای خرید اشتراک به ادمین پیام دهید:\n\n"
+            "📩 @your_username"
+        )
+        try:
+            if update.message:
+                await update.message.reply_text(msg, parse_mode="HTML")
+            elif update.callback_query:
+                await update.callback_query.answer("⛔️ اشتراک فعالی ندارید", show_alert=True)
+        except Exception:
+            pass
         raise ApplicationHandlerStop
-
-    if user.id == authorized_id:
-        return  # مجاز، ادامه بده
-
-    # ⛔️ کاربر غیرمجاز
-    logger.warning(f"⛔️ دسترسی غیرمجاز: user_id={user.id}, username=@{user.username}")
-
-    msg = (
-        "⛔️ <b>این ربات خصوصی است</b>\n\n"
-        "این نسخه فقط برای مالک ربات فعاله.\n"
-        "اگه می‌خوای ربات اختصاصی خودت رو داشته باشی، به ما پیام بده:\n\n"
-        "📩 @AFSHIN77AM"
-    )
-
-    try:
-        if update.message:
-            await update.message.reply_text(msg, parse_mode="HTML")
-        elif update.callback_query:
-            await update.callback_query.answer(
-                "⛔️ این ربات خصوصی است", show_alert=True
-            )
-    except Exception as e:
-        logger.error(f"Authorization reply error: {e}")
-
-    raise ApplicationHandlerStop
 
 # ============================================
 # اسکرپر پس‌زمینه
@@ -1248,6 +1282,7 @@ def main():
     app.add_handler(CommandHandler("add", cmd_add))
     app.add_handler(CommandHandler("list", cmd_list))
     app.add_handler(CommandHandler("report", cmd_report))
+    app.add_handler(CommandHandler("admin", cmd_admin))
     app.add_handler(CommandHandler("export", cmd_export))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))

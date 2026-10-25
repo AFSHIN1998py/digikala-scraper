@@ -132,23 +132,22 @@ def init_db():
     conn.close()
 
 
-def add_product(url: str, title: str, target_price: int = 0) -> int | None:
+def add_product(url: str, title: str, target_price: int = 0, user_id: int = None) -> int | None:
     conn = psycopg2.connect(os.getenv("DATABASE_URL"))
     c = conn.cursor()
     try:
         c.execute("""
-            INSERT INTO products (url, title, target_price, created_at)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO products (url, title, target_price, created_at, user_id)
+            VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT (url) DO NOTHING
             RETURNING product_id
-        """, (url, title, target_price, datetime.now()))
+        """, (url, title, target_price, datetime.now(), user_id))
         result = c.fetchone()
         conn.commit()
         
         if result:
             return result[0]
         
-        # اگه محصول از قبل بود، ID رو بگیر
         c.execute("SELECT product_id FROM products WHERE url = %s", (url,))
         row = c.fetchone()
         return row[0] if row else None
@@ -157,7 +156,6 @@ def add_product(url: str, title: str, target_price: int = 0) -> int | None:
         return None
     finally:
         conn.close()
-
 
 def save_price(product_id: int, price: int):
     """ذخیره قیمت — فقط اگه با آخرین قیمت فرق داشته باشه"""
@@ -565,23 +563,24 @@ def resolve_url_or_search(entry: str) -> str | None:
 # ============================================
 # بخش ۵: تلگرام
 # ============================================
-def send_telegram(message: str) -> bool:
-    """ارسال پیام به تلگرام"""
-    if not BOT_TOKEN or not CHAT_ID:
-        logger.warning("⚠️ توکن/چت‌آیدی تنظیم نشده - پیام ارسال نشد.")
+def send_telegram(message: str, chat_id: int = None) -> bool:
+    """ارسال پیام به تلگرام (قابل ارسال به کاربر خاص)"""
+    target_chat = chat_id if chat_id else CHAT_ID
+    if not BOT_TOKEN or not target_chat:
+        logger.warning(f"⚠️ توکن/چت‌آیدی برای {target_chat} تنظیم نشده - پیام ارسال نشد.")
         return False
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
         r = requests.post(url, json={
-            "chat_id": CHAT_ID,
+            "chat_id": target_chat,
             "text": message,
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
         }, timeout=10)
 
         if r.status_code == 200:
-            logger.info("✅ پیام تلگرام ارسال شد.")
+            logger.info(f"✅ پیام تلگرام برای {target_chat} ارسال شد.")
             return True
         else:
             logger.error(f"❌ تلگرام خطا: {r.status_code} - {r.text}")
@@ -589,7 +588,6 @@ def send_telegram(message: str) -> bool:
     except Exception as e:
         logger.error(f"❌ تلگرام: {e}")
         return False
-
 
 def send_startup_message():
     """ارسال پیام شروع به تلگرام (برای تست اتصال)"""
@@ -705,10 +703,8 @@ def send_daily_report():
 # ============================================
 # بخش ۶: منطق اصلی
 # ============================================
-def check_product(url: str, target_price: int = 0) -> dict | None:
+def check_product(url: str, target_price: int = 0, user_id: int = None) -> dict | None:
     """بررسی یه محصول (اول از API، بعد HTML)"""
-
-    # اگه اسم بود نه لینک، اول سرچ کن
     if url.startswith("SEARCH:"):
         query = url.replace("SEARCH:", "")
         real_url = resolve_url_or_search(query)
@@ -716,11 +712,9 @@ def check_product(url: str, target_price: int = 0) -> dict | None:
             return None
         url = real_url
 
-    logger.info(f"🔍 چک می‌کنم: {url}")
-
+    logger.info(f"🔍 چک می‌کنم: {url} (User: {user_id})")
     title, price = None, None
 
-    # روش ۱: API دیجی‌کالا
     product_id = extract_product_id(url)
     if product_id:
         data = fetch_product_api(product_id)
@@ -730,9 +724,7 @@ def check_product(url: str, target_price: int = 0) -> dict | None:
                 title, price = result
                 logger.info(f"✅ از API دریافت شد: {title}")
 
-    # روش ۲: اگه API جواب نداد، HTML
     if title is None:
-        logger.info("🔄 API جواب نداد، تلاش با HTML...")
         html = fetch_page(url)
         if html:
             result = extract_price(html)
@@ -743,15 +735,12 @@ def check_product(url: str, target_price: int = 0) -> dict | None:
         logger.error(f"❌ نتونستم اطلاعات {url} رو بگیرم.")
         return None
 
-    # قبل از ذخیره، آخرین قیمت رو بگیر
-    product_id_db = add_product(url, title, target_price)
+    product_id_db = add_product(url, title, target_price, user_id)
     last_price = get_last_price(product_id_db) if product_id_db else None
 
-    # ذخیره قیمت جدید
     if product_id_db:
         save_price(product_id_db, price)
 
-    # چک تغییر قیمت
     changed = last_price is not None and last_price != price
     if changed:
         diff = price - last_price
@@ -763,17 +752,18 @@ def check_product(url: str, target_price: int = 0) -> dict | None:
             f"💰 قبلی: {last_price:,} تومان\n"
             f"💰 جدید: <b>{price:,} تومان</b>\n"
             f"📊 تغییر: {abs(diff):,} تومان ({abs(percent):.1f}٪)\n"
-            f"🔗 {url}"
+            f"🔗 {url}",
+            chat_id=user_id
         )
 
-    # چک قیمت هدف
     if target_price > 0 and price <= target_price:
         send_telegram(
             f"🎯 <b>قیمت به هدف رسید!</b>\n\n"
             f"📦 {title}\n"
             f"💰 قیمت: <b>{price:,} تومان</b>\n"
             f"🎯 هدف: {target_price:,} تومان\n"
-            f"🔗 {url}"
+            f"🔗 {url}",
+            chat_id=user_id
         )
 
     logger.info(f"✅ {title}: {price:,} تومان")
@@ -803,62 +793,61 @@ def load_urls_from_file(path: str) -> list[tuple[str, int]]:
     return items
 
 
-def load_products_from_db() -> list[tuple[str, int]]:
-    """خوندن محصولات از دیتابیس PostgreSQL"""
+def load_products_from_db() -> list[tuple[str, int, int]]:
+    """خوندن محصولات از دیتابیس همراه با user_id"""
     try:
         db_url = os.getenv("DATABASE_URL")
         if not db_url:
-            logger.error("❌ DATABASE_URL تنظیم نشده!")
             return []
         conn = psycopg2.connect(db_url)
         c = conn.cursor()
-        c.execute("SELECT url, target_price FROM products")
+        c.execute("SELECT url, target_price, user_id FROM products")
         rows = c.fetchall()
         conn.close()
-        return [(url, target) for url, target in rows if url]
+        return [(url, target, uid) for url, target, uid in rows if url]
     except Exception as e:
         logger.error(f"DB load error: {e}")
         return []
 
+
 def monitor(urls_file: str, once: bool = False):
-    """حلقه اصلی پایش - هر چرخه از DB و urls.txt می‌خونه"""
+    """حلقه اصلی پایش"""
     logger.info("🚀 شروع حلقه پایش...")
 
     while True:
-        # هر چرخه دوباره از DB و فایل می‌خونیم (چون محصولات ممکنه جدید اضافه بشن)
         db_items = load_products_from_db()
         file_items = load_urls_from_file(urls_file)
 
-        # ادغام بدون تکرار
         seen = set()
         items = []
-        for url, target in db_items:
+        # دیتابیس (url, target, user_id)
+        for url, target, uid in db_items:
             if url not in seen:
                 seen.add(url)
-                items.append((url, target))
+                items.append((url, target, uid))
+        # فایل (url, target) - آیدی ادمین پیش‌فرض
         for url, target in file_items:
             if url not in seen:
                 seen.add(url)
-                items.append((url, target))
+                items.append((url, target, int(os.getenv("CHAT_ID", "0"))))
 
         if not items:
             logger.warning("⚠️ هیچ محصولی برای پایش نیست.")
         else:
             logger.info(f"📊 شروع پایش {len(items)} محصول...")
-            for url, target in items:
+            for url, target, uid in items:
                 try:
-                    check_product(url, target)
+                    check_product(url, target, uid)
                 except Exception as e:
                     logger.error(f"❌ خطا در {url}: {e}")
                 time.sleep(random.uniform(3, 8))
             export_to_csv()
 
         if once:
-            logger.info("✅ یک دور تموم شد. (حالت --once)")
             break
-
         logger.info(f"⏸ خواب {CHECK_INTERVAL} ثانیه...")
         time.sleep(CHECK_INTERVAL)
+
 # ============================================
 # بخش ۷: CLI (خط فرمان)
 # ============================================

@@ -607,21 +607,51 @@ def send_startup_message():
 # ============================================
 # بخش ۵.۵: گزارش روزانه
 # ============================================
-def get_sparkline(prices: list[int]) -> str:
-    """تبدیل لیست قیمت‌ها به یک نمودار خطی متنی (Sparkline)"""
+def get_line_chart(prices: list[int]) -> str:
+    """ساخت نمودار خطی متنی با کاراکترهای یونیکد برای تلگرام"""
     if not prices or len(prices) < 3:
-        return "" # اگر رکورد کم بود، نمودار نکش
-        
-    min_p, max_p = min(prices), max(prices)
-    if min_p == max_p: return "➖"
+        return ""
     
-    # حذف کاراکتر بلوک توپر (█) که در فونت تلگرام بد نشون داده میشه
-    blocks = " ▁▂▃▄▅▆▇" 
-    sparkline = ""
+    min_p, max_p = min(prices), max(prices)
+    if min_p == max_p:
+        return "➖"
+    
+    height = 4
+    width = len(prices)
+    
+    # ایجاد یک شبکه خالی
+    grid = [[' ' for _ in range(width)] for _ in range(height)]
+    
+    # محاسبه موقعیت هر نقطه
+    points = []
     for p in prices:
-        idx = int((p - min_p) / (max_p - min_p) * 7)
-        sparkline += blocks[idx]
-    return sparkline
+        y = int((p - min_p) / (max_p - min_p) * (height - 1))
+        y = height - 1 - y  # معکوس کردن محور Y (چون توی تلگرام از بالا به پایینه)
+        points.append(y)
+    
+    # کشیدن خطوط
+    for i in range(width - 1):
+        y1, y2 = points[i], points[i+1]
+        if y1 == y2:
+            grid[y1][i] = '─'
+        elif y1 < y2:
+            grid[y1][i] = '╲'
+            for y in range(y1+1, y2):
+                grid[y][i] = '│'
+        else:
+            grid[y1][i] = '╱'
+            for y in range(y2+1, y1):
+                grid[y][i] = '│'
+    
+    # آخرین نقطه
+    grid[points[-1]][-1] = '•'
+    
+    # تبدیل به رشته و قرار دادن در بلوک کد
+    chart_lines = [''.join(row) for row in grid]
+    chart = '\n'.join(chart_lines)
+    
+    return f"<pre>{chart}</pre>"
+
 
 def get_daily_report(user_id: int) -> str | None:
     """ساخت متن گزارش روزانه برای یک کاربر خاص همراه با نمودار"""
@@ -648,7 +678,7 @@ def get_daily_report(user_id: int) -> str | None:
             if not records: continue
             
             last_price = records[-1]
-            sparkline = get_sparkline(records)
+            sparkline = get_line_chart(records)
             
             # مقایسه با قیمت قبلی
             if len(records) >= 2 and records[-2] != last_price:
@@ -674,7 +704,7 @@ def get_daily_report(user_id: int) -> str | None:
             lines.append(f"{emoji} <b>{title_short}</b>")
             lines.append(f"   💰 {last_price:,} تومان | {change}{target_str}")
             if sparkline:
-                lines.append(f"   📈 {sparkline}")
+                lines.append(f"   {sparkline}")
             lines.append("")
 
         conn.close()

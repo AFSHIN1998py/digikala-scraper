@@ -607,72 +607,79 @@ def send_startup_message():
 # ============================================
 # بخش ۵.۵: گزارش روزانه
 # ============================================
-def get_daily_report() -> str | None:
-    """ساخت متن گزارش روزانه"""
+def get_sparkline(prices: list[int]) -> str:
+    """تبدیل لیست قیمت‌ها به یک نمودار خطی متنی (Sparkline)"""
+    if not prices: return ""
+    if len(prices) == 1: return "➖"
+    
+    min_p, max_p = min(prices), max(prices)
+    if min_p == max_p: return "➖" * len(prices)
+    
+    blocks = " ▂▃▄▅▆▇█" # کاراکترهای نمودار
+    sparkline = ""
+    for p in prices:
+        idx = int((p - min_p) / (max_p - min_p) * 7)
+        sparkline += blocks[idx]
+    return sparkline
+
+
+def get_daily_report(user_id: int) -> str | None:
+    """ساخت متن گزارش روزانه برای یک کاربر خاص همراه با نمودار"""
     try:
         conn = psycopg2.connect(os.getenv("DATABASE_URL"))
         c = conn.cursor()
 
-        c.execute("""
-            SELECT product_id, title, url, target_price
-            FROM products ORDER BY product_id DESC
-        """)
+        # فقط محصولات همین کاربر
+        c.execute("SELECT product_id, title, url, target_price FROM products WHERE user_id = %s ORDER BY product_id DESC", (user_id,))
         products = c.fetchall()
 
         if not products:
             conn.close()
             return None
 
-        lines = ["📊 <b>گزارش روزانه قیمت‌ها</b>", ""]
-
+        lines = [f"📊 <b>گزارش روزانه قیمت‌ها</b>", ""]
         cheaper = pricier = same = hit_target = 0
 
         for pid, title, url, target in products:
-            # دو رکورد آخر
-            c.execute("""
-                SELECT price FROM price_history
-                WHERE product_id = %s ORDER BY timestamp DESC LIMIT 2
-            """, (pid,))
-            records = c.fetchall()
+            # ۷ رکورد آخر رو بگیر (قدیمی به جدید)
+            c.execute("SELECT price FROM price_history WHERE product_id = %s ORDER BY timestamp DESC LIMIT 7", (pid,))
+            records = [r[0] for r in c.fetchall()]
+            records.reverse()
 
-            if not records:
-                continue
-
-            last_price = records[0][0]
-
-            # مقایسه با رکورد قبلی
-            if len(records) >= 2 and records[1][0] != last_price:
-                prev = records[1][0]
+            if not records: continue
+            
+            last_price = records[-1]
+            sparkline = get_sparkline(records)
+            
+            # مقایسه با قیمت قبلی
+            if len(records) >= 2 and records[-2] != last_price:
+                prev = records[-2]
                 diff = last_price - prev
                 percent = (diff / prev) * 100 if prev else 0
-                if diff < 0:
-                    emoji = "🔻"
-                    change = f"{abs(diff):,}- ({abs(percent):.1f}%)"
-                    cheaper += 1
-                else:
-                    emoji = "🔺"
-                    change = f"{diff:,}+ ({percent:.1f}%)"
-                    pricier += 1
+                emoji = "🔻" if diff < 0 else "🔺"
+                change = f"{abs(diff):,} ({abs(percent):.1f}%)"
+                if diff < 0: cheaper += 1
+                else: pricier += 1
             else:
                 emoji = "➡️"
                 change = "بدون تغییر"
                 same += 1
 
-            # چک قیمت هدف
             target_str = ""
             if target and last_price <= target:
                 target_str = " ✅ به هدف رسید!"
                 hit_target += 1
 
-            title_short = title[:45] if len(title) > 45 else title
+            title_short = title[:40] + "..." if len(title) > 40 else title
 
             lines.append(f"{emoji} <b>{title_short}</b>")
             lines.append(f"   💰 {last_price:,} تومان — {change}{target_str}")
+            if sparkline:
+                lines.append(f"   📈 {sparkline}")
             lines.append("")
 
         conn.close()
 
-        # خلاصه
         lines.append("━━━━━━━━━━━━━━━━")
         lines.append("📈 <b>خلاصه:</b>")
         if cheaper: lines.append(f"🔻 {cheaper} ارزان‌تر")
@@ -688,18 +695,22 @@ def get_daily_report() -> str | None:
 
 
 def send_daily_report():
-    """ساخت و ارسال گزارش روزانه"""
-    logger.info("📊 ساخت گزارش روزانه...")
-    report = get_daily_report()
-    if not report:
-        send_telegram("📊 گزارش روزانه:\n\nمحصولی برای گزارش وجود نداره.")
-        return
-    success = send_telegram(report)
-    if success:
-        logger.info("✅ گزارش روزانه ارسال شد.")
-    else:
-        logger.error("❌ ارسال گزارش روزانه ناموفق!")
+    """ارسال گزارش به همه کاربران فعال"""
+    logger.info("📊 شروع ارسال گزارش روزانه به همه کاربران...")
+    try:
+        conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+        c = conn.cursor()
+        c.execute("SELECT user_id FROM users WHERE is_active = TRUE")
+        users = c.fetchall()
+        conn.close()
 
+        for (uid,) in users:
+            report = get_daily_report(uid)
+            if report:
+                send_telegram(report, chat_id=uid)
+                time.sleep(1) # جلوگیری از بلاک شدن توسط تلگرام
+    except Exception as e:
+        logger.error(f"Send daily report error: {e}")
 # ============================================
 # بخش ۶: منطق اصلی
 # ============================================
@@ -745,13 +756,30 @@ def check_product(url: str, target_price: int = 0, user_id: int = None) -> dict 
     if changed:
         diff = price - last_price
         percent = (diff / last_price) * 100 if last_price else 0
-        emoji = "🔻" if diff < 0 else "🔺"
+        abs_percent = abs(percent)
+
+        # --- منطق هشدار هوشمند ---
+        if diff < 0: # کاهش قیمت
+            if abs_percent >= 15:
+                header = "🚨🔥 <b>فرصت طلایی! کاهش قیمت شدید</b>"
+            elif abs_percent >= 5:
+                header = "🔻 <b>کاهش قیمت قابل توجه</b>"
+            else:
+                header = "🔽 <b>کاهش جزئی قیمت</b>"
+        else: # افزایش قیمت
+            if abs_percent >= 15:
+                header = "⚠️📈 <b>افزایش شدید قیمت</b>"
+            elif abs_percent >= 5:
+                header = "🔺 <b>افزایش قیمت قابل توجه</b>"
+            else:
+                header = "🔼 <b>افزایش جزئی قیمت</b>"
+
         send_telegram(
-            f"{emoji} <b>تغییر قیمت!</b>\n\n"
+            f"{header}\n\n"
             f"📦 {title}\n"
             f"💰 قبلی: {last_price:,} تومان\n"
             f"💰 جدید: <b>{price:,} تومان</b>\n"
-            f"📊 تغییر: {abs(diff):,} تومان ({abs(percent):.1f}٪)\n"
+            f"📊 تغییر: {abs(diff):,} تومان ({abs_percent:.1f}٪)\n"
             f"🔗 {url}",
             chat_id=user_id
         )

@@ -381,22 +381,54 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await _render_list(update.message, products)
 
-async def _render_list(target, products):
-    lines = [f"📋 <b>محصولات ({len(products)}):</b>\n"]
-    for i, p in enumerate(products[:10], 1):
+LIST_PAGE_SIZE = 10
+
+async def _render_list(target, products, page=0, edit=False):
+    total = len(products)
+    total_pages = max(1, (total + LIST_PAGE_SIZE - 1) // LIST_PAGE_SIZE)
+    page = min(max(0, page), total_pages - 1)
+    
+    start = page * LIST_PAGE_SIZE
+    end = start + LIST_PAGE_SIZE
+    page_products = products[start:end]
+    
+    lines = [f"📋 <b>محصولات ({total}):</b> صفحه {page+1}/{total_pages}\n"]
+    for i, p in enumerate(page_products, start+1):
         price_str = f"{p['last_price']:,} ت" if p['last_price'] else "—"
         target_str = f"{p['target']:,} ت" if p['target'] else "—"
         lines.append(
             f"{i}. <b>{esc(p['title'][:55])}</b>\n"
             f"   💰 {price_str}   🎯 {target_str}\n"
         )
+    
     kb = []
-    for p in products[:10]:
+    for p in page_products:
         kb.append([InlineKeyboardButton(
             f"ℹ️ {esc(p['title'][:35])}", callback_data=f"info:{p['id']}"
         )])
+    
+    # دکمه‌های ناوبری
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ قبلی", callback_data=f"lst_pg:{page-1}"))
+    nav.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton("بعدی ➡️", callback_data=f"lst_pg:{page+1}"))
+    if len(nav) > 1:
+        kb.append(nav)
+    
     kb.append([InlineKeyboardButton("🔙 منوی اصلی", callback_data="menu:main")])
-    await target.reply_text("\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
+    
+    text = "\n".join(lines)
+    markup = InlineKeyboardMarkup(kb)
+    
+    if edit:
+        try:
+            await target.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
+        except Exception:
+            await target.message.reply_text(text, parse_mode="HTML", reply_markup=markup)
+    else:
+        await target.reply_text(text, parse_mode="HTML", reply_markup=markup)
 
 async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -814,7 +846,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.delete()
         except Exception:
             pass
-        await _render_list(query.message, products)
+        await _render_list(query, products, page=0, edit=True)
         return
 
     # ---------- خروجی CSV ----------
@@ -946,6 +978,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("det:"):
         idx = int(data.split(":")[1])
         await render_detail(query, context, idx, from_list=False)
+        return
+
+    # ---------- صفحه‌بندی لیست ----------
+    if data.startswith("lst_pg:"):
+        page = int(data.split(":")[1])
+        products = get_all_products(user_id)
+        await _render_list(query, products, page=page, edit=True)
         return
 
     # ---------- اطلاعات محصول (از لیست) ----------

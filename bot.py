@@ -375,13 +375,11 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    products = get_all_products(user_id=update.effective_user.id)
+    products = get_all_products(update.effective_user.id)
     if not products:
-        await update.message.reply_text("📭 محصولی نداری. /add بزن.",
-                                        reply_markup=main_menu_kb())
+        await update.message.reply_text("📭 محصولی نداری. /add بزن.", reply_markup=main_menu_kb())
         return
     await _render_list(update.message, products)
-
 
 async def _render_list(target, products):
     lines = [f"📋 <b>محصولات ({len(products)}):</b>\n"]
@@ -398,9 +396,7 @@ async def _render_list(target, products):
             f"ℹ️ {esc(p['title'][:35])}", callback_data=f"info:{p['id']}"
         )])
     kb.append([InlineKeyboardButton("🔙 منوی اصلی", callback_data="menu:main")])
-    await target.reply_text("\n".join(lines), parse_mode="HTML",
-                            reply_markup=InlineKeyboardMarkup(kb))
-
+    await target.reply_text("\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
 
 async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -662,8 +658,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.clear()
             return
 
-        # پاس دادن price برای ذخیره قیمت اولیه
+        # پاس دادن user_id به تابع جدید
         success, msg = insert_product(product["url"], product["title"], target, product.get("price"), user_id=update.effective_user.id)
+        
         if success:
             target_str = f"{target:,} تومان" if target else "بدون هدف"
             price_str = f"{product.get('price', 0):,}" if product.get('price') else "?"
@@ -771,6 +768,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
+    user_id = update.effective_user.id
 
     if data == "noop":
         return
@@ -779,11 +777,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "menu:main":
         context.user_data.clear()
         try:
-            await query.edit_message_text("👋 <b>منوی اصلی</b>",
-                                          parse_mode="HTML", reply_markup=main_menu_kb())
+            await query.edit_message_text("👋 <b>منوی اصلی</b>", parse_mode="HTML", reply_markup=main_menu_kb())
         except Exception:
-            await query.message.reply_text("👋 <b>منوی اصلی</b>",
-                                           parse_mode="HTML", reply_markup=main_menu_kb())
+            await query.message.reply_text("👋 <b>منوی اصلی</b>", parse_mode="HTML", reply_markup=main_menu_kb())
         return
 
     # ---------- منوی افزودن ----------
@@ -799,9 +795,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception:
             await query.message.reply_text(
-                "🔍 <b>اسم محصول یا لینکش رو بفرست:</b>\n\n"
-                "• اسم: <code>ساک ورزشی</code>\n"
-                "• لینک: <code>https://www.digikala.com/product/dkp-22214723/</code>",
+                "🔍 <b>اسم محصول یا لینکش رو بفرست:</b>",
                 parse_mode="HTML", reply_markup=cancel_kb()
             )
         return
@@ -809,14 +803,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ---------- لیست ----------
     if data == "menu:list":
         context.user_data.clear()
-        products = get_all_products()
+        products = get_all_products(user_id)
         if not products:
             try:
-                await query.edit_message_text("📭 محصولی نداری.",
-                                              reply_markup=main_menu_kb())
+                await query.edit_message_text("📭 محصولی نداری.", reply_markup=main_menu_kb())
             except Exception:
-                await query.message.reply_text("📭 محصولی نداری.",
-                                               reply_markup=main_menu_kb())
+                await query.message.reply_text("📭 محصولی نداری.", reply_markup=main_menu_kb())
             return
         try:
             await query.message.delete()
@@ -831,9 +823,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             export_to_csv()
             if os.path.exists(CSV_PATH):
                 with open(CSV_PATH, "rb") as f:
-                    await query.message.reply_document(
-                        document=f, filename="prices.csv", caption="📊 CSV"
-                    )
+                    await query.message.reply_document(document=f, filename="prices.csv", caption="📊 CSV")
         except Exception as e:
             await query.message.reply_text(f"❌ خطا: {e}")
         return
@@ -852,16 +842,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("✅ لغو شد.", reply_markup=main_menu_kb())
         return
 
-    # ---------- منوی فیلترها ----------
+    # ---------- فیلترها ----------
     if data == "flt:menu":
         filters = context.user_data.get("search", {}).get("filters", {})
         try:
             await query.edit_message_reply_markup(reply_markup=filters_menu_kb(filters))
-        except Exception as e:
-            logger.error(f"filters menu: {e}")
+        except Exception:
+            pass
         return
 
-    # ---------- فقط تخفیف‌دار ----------
     if data == "flt:disc":
         s = context.user_data.get("search", {})
         f = s.get("filters", {})
@@ -870,11 +859,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["search"] = s
         try:
             await query.edit_message_reply_markup(reply_markup=filters_menu_kb(f))
-        except Exception as e:
-            logger.error(f"flt:disc: {e}")
+        except Exception:
+            pass
         return
 
-    # ---------- فقط موجود ----------
     if data == "flt:stock":
         s = context.user_data.get("search", {})
         f = s.get("filters", {})
@@ -883,61 +871,43 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["search"] = s
         try:
             await query.edit_message_reply_markup(reply_markup=filters_menu_kb(f))
-        except Exception as e:
-            logger.error(f"flt:stock: {e}")
+        except Exception:
+            pass
         return
 
-    # ---------- حذف همه فیلترها ----------
     if data == "flt:clear":
         if "search" in context.user_data:
             context.user_data["search"]["filters"] = {}
         try:
             await query.edit_message_reply_markup(reply_markup=filters_menu_kb({}))
-        except Exception as e:
-            logger.error(f"flt:clear: {e}")
+        except Exception:
+            pass
         return
 
-    # ---------- اعمال فیلترها ----------
     if data == "flt:apply":
         _do_search(context)
         await render_results(query, context, edit=True)
         return
 
-    # ---------- محدوده قیمت ----------
     if data == "flt:price":
         context.user_data["state"] = "waiting_price_range"
         try:
             await query.edit_message_text(
-                "💰 <b>محدوده قیمت (تومان):</b>\n\n"
-                "فرمت: <code>min-max</code>\n\n"
-                "مثال:\n"
-                "• <code>500000-2000000</code>\n"
-                "• <code>0-1000000</code> (تا ۱ میلیون)\n"
-                "• <code>500000-0</code> (از ۵۰۰ هزار به بالا)\n\n"
-                "برای حذف فیلتر قیمت: /skip",
+                "💰 <b>محدوده قیمت (تومان):</b>\n\nفرمت: <code>min-max</code>\nمثال: <code>500000-2000000</code>\n\nبرای حذف فیلتر قیمت: /skip",
                 parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("❌ لغو", callback_data="flt:menu_back")
-                ]])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ لغو", callback_data="flt:menu_back")]])
             )
-        except Exception as e:
-            logger.error(f"flt:price: {e}")
+        except Exception:
+            pass
         return
 
-    # ---------- بازگشت به منوی فیلترها ----------
     if data == "flt:menu_back":
         f = context.user_data.get("search", {}).get("filters", {})
         context.user_data["state"] = "browsing"
         try:
-            await query.edit_message_text(
-                "🔧 <b>فیلترها</b>\n\n"
-                "چند تا فیلتر رو با هم می‌تونی روشن کنی،\n"
-                "بعد «🔙 نمایش نتایج» رو بزن:",
-                parse_mode="HTML",
-                reply_markup=filters_menu_kb(f)
-            )
-        except Exception as e:
-            logger.error(f"flt:menu_back: {e}")
+            await query.edit_message_text("🔧 <b>فیلترها</b>", parse_mode="HTML", reply_markup=filters_menu_kb(f))
+        except Exception:
+            pass
         return
 
     # ---------- ناوبری صفحات ----------
@@ -954,11 +924,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await render_results(query, context, edit=True)
         else:
             try:
-                await query.edit_message_text("❌ نتایج قدیمی. /add",
-                                              reply_markup=main_menu_kb())
+                await query.edit_message_text("❌ نتایج قدیمی. /add", reply_markup=main_menu_kb())
             except Exception:
-                await query.message.reply_text("❌ نتایج قدیمی. /add",
-                                               reply_markup=main_menu_kb())
+                await query.message.reply_text("❌ نتایج قدیمی. /add", reply_markup=main_menu_kb())
         return
 
     # ---------- مرتب‌سازی ----------
@@ -980,13 +948,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await render_detail(query, context, idx, from_list=False)
         return
 
-    # ---------- اطلاعات محصول ----------
+    # ---------- اطلاعات محصول (از لیست) ----------
     if data.startswith("info:"):
         pid = int(data.split(":")[1])
-        logger.info(f"🎯 INFO HANDLER CALLED for pid={pid}")   # ← این خط رو اضافه کن
-        product = get_product(pid, user_id=update.effective_user.id)
+        product = get_product(pid, user_id)
         if not product:
-            await query.message.reply_text("❌ پیدا نشد.")
+            await query.message.reply_text("❌ پیدا نشد یا دسترسی ندارید.")
             return
 
         lines = [f"📦 <b>{esc(product['title'])}</b>\n"]
@@ -1014,95 +981,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔙 لیست", callback_data="menu:list")],
         ])
         try:
-            await query.edit_message_text("\n".join(lines), parse_mode="HTML",
-                                          reply_markup=kb, disable_web_page_preview=True)
+            await query.edit_message_text("\n".join(lines), parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
         except Exception:
-            await query.message.reply_text("\n".join(lines), parse_mode="HTML",
-                                           reply_markup=kb, disable_web_page_preview=True)
+            await query.message.reply_text("\n".join(lines), parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
         return
 
-        # ---------- مقایسه در ترب ----------
-    if data.startswith("torob:"):
-        idx = int(data.split(":")[1])
-        results = context.user_data.get("search", {}).get("results", [])
-        if idx >= len(results):
-            await query.message.reply_text("❌ خطا. دوباره /add بزن.")
-            return
-
-        product = results[idx]
-        title = product["title"]
-
-        msg = await query.message.reply_text(
-            f"🔍 در حال جستجو در ترب برای:\n«{esc(title[:50])}»..."
-        )
-
-        torob_results = search_torob(title, limit=10)
-
-        if not torob_results:
-            await msg.edit_text(
-                "❌ نتیجه‌ای در ترب پیدا نشد.\n"
-                "شاید عنوان خیلی خاصه. دوباره امتحان کن."
-            )
-            return
-
-        lines = [f"🏆 <b>مقایسه در ترب</b>\n"]
-        lines.append(f"📦 «{esc(title[:60])}»\n")
-
-        # ارزان‌ترین
-        valid = [r for r in torob_results if r.get("price")]
-        if valid:
-            cheapest = min(valid, key=lambda x: x["price"])
-            lines.append(f"💰 <b>ارزان‌ترین در ترب:</b> {cheapest['price']:,} تومان")
-            if cheapest.get("shop_text"):
-                lines.append(f"🏪 {esc(cheapest['shop_text'])}")
-            lines.append("")
-
-        # مقایسه با دیجی‌کالا
-        dk_price = product.get("price")
-        if dk_price and valid:
-            diff = cheapest["price"] - dk_price
-            if diff < 0:
-                lines.append(f"📉 <b>ترب {abs(diff):,} تومان ارزان‌تره!</b>")
-            elif diff > 0:
-                lines.append(f"📈 <b>دیجی‌کالا {abs(diff):,} تومان ارزان‌تره</b>")
-            else:
-                lines.append("🤝 <b>قیمت‌ها برابره</b>")
-            lines.append("")
-
-            lines.append(f"<b>نتایج برتر ترب ({len(torob_results)}):</b>\n")
-
-        kb = []
-        for i, r in enumerate(torob_results[:10], 1):
-            price_str = f"{r['price']:,}" if r.get("price") else "?"
-            lines.append(f"{i}. {esc(r['name'][:50])}")
-            lines.append(f"   💰 {price_str} تومان")
-            if r.get("shop_text"):
-                lines.append(f"   🏪 {esc(r['shop_text'])}")
-            if r.get("url"):
-                kb.append([InlineKeyboardButton(
-                    f"🛒 {i}. {r['name'][:32]} — {price_str} ت",
-                    url=r["url"]
-                )])
-
-        kb.append([InlineKeyboardButton("🔙 بازگشت به نتایج", callback_data="back_results")])
-
-        try:
-            await msg.edit_text(
-                "\n".join(lines),
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(kb),
-                disable_web_page_preview=True,
-            )
-        except Exception as e:
-            logger.error(f"torob edit: {e}")
-        return
-
-    # ---------- افزودن به پایش ----------
+    # ---------- افزودن به پایش (از صفحه جزئیات) ----------
     if data.startswith("add:"):
         idx = int(data.split(":")[1])
         results = context.user_data.get("search", {}).get("results", [])
-        logger.info(f"add clicked: idx={idx}, total={len(results)}")
-
         if idx >= len(results):
             await query.message.reply_text("❌ خطا. /add بزن.")
             return
@@ -1113,10 +1000,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         price_str = f"{product['price']:,}" if product.get('price') else "?"
         await query.message.reply_text(
-            f"✅ <b>انتخاب شد:</b>\n\n"
-            f"📦 {esc(product['title'])}\n"
-            f"💰 {price_str} تومان\n\n"
-            f"🎯 <b>قیمت هدف</b> رو بفرست (تومان) یا /skip.",
+            f"✅ <b>انتخاب شد:</b>\n\n📦 {esc(product['title'])}\n💰 {price_str} تومان\n\n🎯 <b>قیمت هدف</b> رو بفرست (تومان) یا /skip.",
             parse_mode="HTML", reply_markup=cancel_kb()
         )
         return
@@ -1127,25 +1011,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["edit_pid"] = pid
         context.user_data["state"] = "editing_target"
         try:
-            await query.edit_message_text(
-                "✏️ <b>قیمت هدف جدید (تومان):</b>\n\n"
-                "برای حذف هدف: /skip یا 0",
-                parse_mode="HTML", reply_markup=cancel_kb()
-            )
+            await query.edit_message_text("✏️ <b>قیمت هدف جدید (تومان):</b>\n\nبرای حذف هدف: /skip یا 0", parse_mode="HTML", reply_markup=cancel_kb())
         except Exception:
-            await query.message.reply_text(
-                "✏️ <b>قیمت هدف جدید:</b>\n/skip = حذف",
-                parse_mode="HTML", reply_markup=cancel_kb()
-            )
+            await query.message.reply_text("✏️ <b>قیمت هدف جدید:</b>\n/skip = حذف", parse_mode="HTML", reply_markup=cancel_kb())
         return
 
-    # ---------- حذف با تأیید ----------
+    # ---------- حذف با تایید ----------
     if data.startswith("del:"):
         pid = int(data.split(":")[1])
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ بله", callback_data=f"delc:{pid}"),
-            InlineKeyboardButton("❌ نه", callback_data="menu:list"),
-        ]])
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ بله", callback_data=f"delc:{pid}"), InlineKeyboardButton("❌ نه", callback_data="menu:list")]])
         try:
             await query.edit_message_text("⚠️ مطمئنی؟", reply_markup=kb)
         except Exception:
@@ -1154,19 +1028,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("delc:"):
         pid = int(data.split(":")[1])
-        if delete_product(pid, user_id=update.effective_user.id):
+        if delete_product(pid, user_id):
             try:
-                await query.edit_message_text(
-                    "✅ حذف شد.",
-                    reply_markup=InlineKeyboardMarkup([[
-                        InlineKeyboardButton("🔙 لیست", callback_data="menu:list")
-                    ]])
-                )
+                await query.edit_message_text("✅ حذف شد.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لیست", callback_data="menu:list")]]))
             except Exception:
                 await query.message.reply_text("✅ حذف شد.")
         else:
-            await query.message.reply_text("❌ خطا.")
-
+            await query.message.reply_text("❌ خطا یا دسترسی ندارید.")
+        return
 
 # ============================================
 # گزارش روزانه (Thread جدا)

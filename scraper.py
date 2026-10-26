@@ -607,54 +607,9 @@ def send_startup_message():
 # ============================================
 # بخش ۵.۵: گزارش روزانه
 # ============================================
-def get_line_chart(prices: list[int]) -> str:
-    """ساخت نمودار خطی متنی با کاراکترهای یونیکد برای تلگرام"""
-    if not prices or len(prices) < 3:
-        return ""
-    
-    min_p, max_p = min(prices), max(prices)
-    if min_p == max_p:
-        return "➖"
-    
-    height = 4
-    width = len(prices)
-    
-    # ایجاد یک شبکه خالی
-    grid = [[' ' for _ in range(width)] for _ in range(height)]
-    
-    # محاسبه موقعیت هر نقطه
-    points = []
-    for p in prices:
-        y = int((p - min_p) / (max_p - min_p) * (height - 1))
-        y = height - 1 - y  # معکوس کردن محور Y (چون توی تلگرام از بالا به پایینه)
-        points.append(y)
-    
-    # کشیدن خطوط
-    for i in range(width - 1):
-        y1, y2 = points[i], points[i+1]
-        if y1 == y2:
-            grid[y1][i] = '─'
-        elif y1 < y2:
-            grid[y1][i] = '╲'
-            for y in range(y1+1, y2):
-                grid[y][i] = '│'
-        else:
-            grid[y1][i] = '╱'
-            for y in range(y2+1, y1):
-                grid[y][i] = '│'
-    
-    # آخرین نقطه
-    grid[points[-1]][-1] = '•'
-    
-    # تبدیل به رشته و قرار دادن در بلوک کد
-    chart_lines = [''.join(row) for row in grid]
-    chart = '\n'.join(chart_lines)
-    
-    return f"<pre>{chart}</pre>"
-
 
 def get_daily_report(user_id: int) -> str | None:
-    """ساخت متن گزارش روزانه برای یک کاربر خاص همراه با نمودار"""
+    """ساخت متن گزارش روزانه برای یک کاربر خاص"""
     try:
         conn = psycopg2.connect(os.getenv("DATABASE_URL"))
         c = conn.cursor()
@@ -670,25 +625,29 @@ def get_daily_report(user_id: int) -> str | None:
         cheaper = pricier = same = hit_target = 0
 
         for pid, title, url, target in products:
-            # ۷ رکورد آخر رو بگیر (قدیمی به جدید)
-            c.execute("SELECT price FROM price_history WHERE product_id = %s ORDER BY timestamp DESC LIMIT 7", (pid,))
+            # ۲ رکورد آخر رو بگیر
+            c.execute("SELECT price FROM price_history WHERE product_id = %s ORDER BY timestamp DESC LIMIT 2", (pid,))
             records = [r[0] for r in c.fetchall()]
             records.reverse()
 
             if not records: continue
             
             last_price = records[-1]
-            sparkline = get_line_chart(records)
             
             # مقایسه با قیمت قبلی
             if len(records) >= 2 and records[-2] != last_price:
                 prev = records[-2]
                 diff = last_price - prev
                 percent = (diff / prev) * 100 if prev else 0
-                emoji = "🔻" if diff < 0 else "🔺"
-                change = f"{abs(diff):,} ({abs(percent):.1f}%)"
-                if diff < 0: cheaper += 1
-                else: pricier += 1
+                
+                if diff < 0:
+                    emoji = "📉"
+                    change = f"{abs(diff):,}- ({abs(percent):.1f}%)"
+                    cheaper += 1
+                else:
+                    emoji = "📈"
+                    change = f"{diff:,}+ ({percent:.1f}%)"
+                    pricier += 1
             else:
                 emoji = "➡️"
                 change = "بدون تغییر"
@@ -696,23 +655,21 @@ def get_daily_report(user_id: int) -> str | None:
 
             target_str = ""
             if target and last_price <= target:
-                target_str = " | ✅ به هدف رسید"
+                target_str = " | ✅ هدف"
                 hit_target += 1
 
-            title_short = title[:40] + "..." if len(title) > 40 else title
+            title_short = title[:35] + "..." if len(title) > 35 else title
 
             lines.append(f"{emoji} <b>{title_short}</b>")
             lines.append(f"   💰 {last_price:,} تومان | {change}{target_str}")
-            if sparkline:
-                lines.append(f"   {sparkline}")
             lines.append("")
 
         conn.close()
 
         lines.append("━━━━━━━━━━━━━━━━")
         lines.append("📈 <b>خلاصه:</b>")
-        if cheaper: lines.append(f"🔻 {cheaper} ارزان‌تر")
-        if pricier: lines.append(f"🔺 {pricier} گران‌تر")
+        if cheaper: lines.append(f"📉 {cheaper} ارزان‌تر")
+        if pricier: lines.append(f"📈 {pricier} گران‌تر")
         if same:    lines.append(f"➡️ {same} بدون تغییر")
         if hit_target: lines.append(f"🎯 {hit_target} به هدف رسید")
 

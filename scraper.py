@@ -609,19 +609,19 @@ def send_startup_message():
 # ============================================
 def get_sparkline(prices: list[int]) -> str:
     """تبدیل لیست قیمت‌ها به یک نمودار خطی متنی (Sparkline)"""
-    if not prices: return ""
-    if len(prices) == 1: return "➖"
-    
+    if not prices or len(prices) < 3:
+        return "" # اگر رکورد کم بود، نمودار نکش
+        
     min_p, max_p = min(prices), max(prices)
-    if min_p == max_p: return "➖" * len(prices)
+    if min_p == max_p: return "➖"
     
-    blocks = " ▂▃▄▅▆▇█" # کاراکترهای نمودار
+    # حذف کاراکتر بلوک توپر (█) که در فونت تلگرام بد نشون داده میشه
+    blocks = " ▁▂▃▄▅▆▇" 
     sparkline = ""
     for p in prices:
         idx = int((p - min_p) / (max_p - min_p) * 7)
         sparkline += blocks[idx]
     return sparkline
-
 
 def get_daily_report(user_id: int) -> str | None:
     """ساخت متن گزارش روزانه برای یک کاربر خاص همراه با نمودار"""
@@ -629,7 +629,6 @@ def get_daily_report(user_id: int) -> str | None:
         conn = psycopg2.connect(os.getenv("DATABASE_URL"))
         c = conn.cursor()
 
-        # فقط محصولات همین کاربر
         c.execute("SELECT product_id, title, url, target_price FROM products WHERE user_id = %s ORDER BY product_id DESC", (user_id,))
         products = c.fetchall()
 
@@ -667,13 +666,13 @@ def get_daily_report(user_id: int) -> str | None:
 
             target_str = ""
             if target and last_price <= target:
-                target_str = " ✅ به هدف رسید!"
+                target_str = " | ✅ به هدف رسید"
                 hit_target += 1
 
             title_short = title[:40] + "..." if len(title) > 40 else title
 
             lines.append(f"{emoji} <b>{title_short}</b>")
-            lines.append(f"   💰 {last_price:,} تومان — {change}{target_str}")
+            lines.append(f"   💰 {last_price:,} تومان | {change}{target_str}")
             if sparkline:
                 lines.append(f"   📈 {sparkline}")
             lines.append("")
@@ -692,7 +691,6 @@ def get_daily_report(user_id: int) -> str | None:
     except Exception as e:
         logger.error(f"Daily report error: {e}")
         return None
-
 
 def send_daily_report():
     """ارسال گزارش به همه کاربران فعال"""

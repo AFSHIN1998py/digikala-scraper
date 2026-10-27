@@ -1133,26 +1133,37 @@ async def check_authorization(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not user: return
 
     owner_id = int(os.getenv("CHAT_ID", "0"))
-    
+    channel_id = os.getenv("CHANNEL_ID", "").strip()
+
     # ادمین (تو) همیشه دسترسی داره
     if user.id == owner_id:
         return
+        
+    # چک کردن عضویت در کانال (اگه ست شده باشه)
+    if channel_id:
+        try:
+            member = await context.bot.get_chat_member(chat_id=channel_id, user_id=user.id)
+            if member.status in ["left", "kicked"]:
+                msg = (
+                    "⛔️ <b>برای استفاده از ربات، ابتدا باید در کانال ما عضو شوید:</b>\n\n"
+                    f"👉 {channel_id}\n\n"
+                    "بعد از عضویت، دوباره /start را بزنید."
+                )
+                if update.message:
+                    await update.message.reply_text(msg, parse_mode="HTML")
+                elif update.callback_query:
+                    await update.callback_query.answer("لطفا ابتدا در کانال عضو شوید", show_alert=True)
+                raise ApplicationHandlerStop
+        except Exception as e:
+            logger.error(f"Channel check error: {e}")
 
     db_user = get_user(user.id)
     if not db_user or not db_user["is_active"]:
-        msg = (
-            "⛔️ <b>دسترسی غیرمجاز</b>\n\n"
-            "شما در سیستم ثبت نشده‌اید یا اشتراکتان غیرفعال است.\n"
-            "برای خرید اشتراک به ادمین پیام دهید:\n\n"
-            "📩 @your_username"
-        )
-        try:
-            if update.message:
-                await update.message.reply_text(msg, parse_mode="HTML")
-            elif update.callback_query:
-                await update.callback_query.answer("⛔️ اشتراک فعالی ندارید", show_alert=True)
-        except Exception:
-            pass
+        msg = "⛔️ <b>دسترسی غیرمجاز</b>\n\nشما در سیستم ثبت نشده‌اید یا اشتراکتان غیرفعال است."
+        if update.message:
+            await update.message.reply_text(msg, parse_mode="HTML")
+        elif update.callback_query:
+            await update.callback_query.answer("⛔️ اشتراک فعالی ندارید", show_alert=True)
         raise ApplicationHandlerStop
 
 # ============================================

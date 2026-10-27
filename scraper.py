@@ -339,31 +339,30 @@ def extract_price(html: str) -> tuple[str, int] | None:
         return None
 
 
-def parse_api_response(data: dict) -> tuple[str, int] | None:
-    """استخراج عنوان و قیمت از پاسخ JSON نسخه ۲ دیجی‌کالا"""
+def parse_api_response(data: dict) -> tuple[str, int, bool] | None:
     try:
         product = data.get("data", {}).get("product", {})
         title = product.get("title_fa", "نامشخص")
-
-        selling_price = None
         variant = product.get("default_variant") or {}
+        
         selling_price = variant.get("price", {}).get("selling_price")
+        status = variant.get("status", "") # وضعیت موجودی
+        is_available = (status == "marketable") # اگر marketable بود یعنی موجوده
 
         if selling_price is None:
             for v in product.get("variants", []) or []:
                 p = v.get("price", {}).get("selling_price")
                 if p:
                     selling_price = p
+                    status = v.get("status", "")
+                    is_available = (status == "marketable")
                     break
 
         if selling_price is None:
-            logger.warning("⚠️ قیمت در API v2 پیدا نشد.")
             return None
 
         price_toman = int(selling_price) // 10
-
-        return title, price_toman
-
+        return title, price_toman, is_available
     except Exception as e:
         logger.error(f"❌ خطای پارس API: {e}")
         return None
@@ -735,7 +734,7 @@ def check_product(url: str, target_price: int = 0, user_id: int = None) -> dict 
         url = real_url
 
     logger.info(f"🔍 چک می‌کنم: {url} (User: {user_id})")
-    title, price = None, None
+    title, price, is_available = None, None, True
 
     product_id = extract_product_id(url)
     if product_id:
@@ -743,7 +742,7 @@ def check_product(url: str, target_price: int = 0, user_id: int = None) -> dict 
         if data:
             result = parse_api_response(data)
             if result:
-                title, price = result
+                title, price, is_available = result # اینجا is_available اضافه شد
                 logger.info(f"✅ از API دریافت شد: {title}")
 
     if title is None:
@@ -762,6 +761,15 @@ def check_product(url: str, target_price: int = 0, user_id: int = None) -> dict 
 
     if product_id_db:
         save_price(product_id_db, price)
+
+    # --- چک موجودی (قسمت جدید) ---
+    if not is_available:
+        send_telegram(
+            f"⚠️ <b>محصول ناموجود شد!</b>\n\n"
+            f"📦 {title}\n"
+            f"🔗 {url}",
+            chat_id=user_id
+        )
 
     changed = last_price is not None and last_price != price
     if changed:

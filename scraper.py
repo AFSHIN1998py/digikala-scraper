@@ -609,7 +609,7 @@ def send_startup_message():
 # ============================================
 
 def get_daily_report(user_id: int) -> str | None:
-    """ساخت متن گزارش روزانه برای یک کاربر خاص"""
+    """ساخت متن گزارش روزانه پرمیوم با ایموجی‌های پویا"""
     try:
         conn = psycopg2.connect(os.getenv("DATABASE_URL"))
         c = conn.cursor()
@@ -621,11 +621,12 @@ def get_daily_report(user_id: int) -> str | None:
             conn.close()
             return None
 
-        lines = [f"📊 <b>گزارش روزانه قیمت‌ها</b>", ""]
-        cheaper = pricier = same = hit_target = 0
+        dropped = []
+        rose = []
+        stable = []
+        hit_target = 0
 
         for pid, title, url, target in products:
-            # ۲ رکورد آخر رو بگیر
             c.execute("SELECT price FROM price_history WHERE product_id = %s ORDER BY timestamp DESC LIMIT 2", (pid,))
             records = [r[0] for r in c.fetchall()]
             records.reverse()
@@ -633,52 +634,77 @@ def get_daily_report(user_id: int) -> str | None:
             if not records: continue
             
             last_price = records[-1]
-            
-            # مقایسه با قیمت قبلی
+            title_short = title[:30] + "..." if len(title) > 30 else title
+            target_str = " ✅ هدف" if (target and last_price <= target) else ""
+            if target_str: hit_target += 1
+
             if len(records) >= 2 and records[-2] != last_price:
                 prev = records[-2]
                 diff = last_price - prev
                 percent = (diff / prev) * 100 if prev else 0
+                abs_percent = abs(percent)
                 
-                if diff < 0:
-                    emoji = "📉"
-                    change = f"{abs(diff):,}- ({abs(percent):.1f}%)"
-                    cheaper += 1
-                else:
-                    emoji = "📈"
-                    change = f"{diff:,}+ ({percent:.1f}%)"
-                    pricier += 1
+                if diff < 0: # کاهش
+                    if abs_percent >= 15:
+                        emoji = "🚨🔥🔥" # فرصت طلایی
+                    elif abs_percent >= 5:
+                        emoji = "🔥" # فرصت خوب
+                    else:
+                        emoji = "📉" # کاهش عادی
+                    
+                    dropped.append((abs_percent, f"{emoji} <b>{title_short}</b>\n   💰 {last_price:,} ت | {abs(diff):,}- ({abs_percent:.1f}%){target_str}"))
+                else: # افزایش
+                    if abs_percent >= 15:
+                        emoji = "⚠️📈📈" # هشدار شدید
+                    elif abs_percent >= 5:
+                        emoji = "⚠️" # هشدار
+                    else:
+                        emoji = "📈" # افزایش عادی
+                        
+                    rose.append((abs_percent, f"{emoji} <b>{title_short}</b>\n   💰 {last_price:,} ت | {diff:,}+ ({abs_percent:.1f}%){target_str}"))
             else:
-                emoji = "➡️"
-                change = "بدون تغییر"
-                same += 1
-
-            target_str = ""
-            if target and last_price <= target:
-                target_str = " | ✅ هدف"
-                hit_target += 1
-
-            title_short = title[:35] + "..." if len(title) > 35 else title
-
-            lines.append(f"{emoji} <b>{title_short}</b>")
-            lines.append(f"   💰 {last_price:,} تومان | {change}{target_str}")
-            lines.append("")
+                stable.append(f"➡️ <b>{title_short}</b>\n   💰 {last_price:,} ت{target_str}")
 
         conn.close()
 
-        lines.append("━━━━━━━━━━━━━━━━")
-        lines.append("📈 <b>خلاصه:</b>")
-        if cheaper: lines.append(f"📉 {cheaper} ارزان‌تر")
-        if pricier: lines.append(f"📈 {pricier} گران‌تر")
-        if same:    lines.append(f"➡️ {same} بدون تغییر")
-        if hit_target: lines.append(f"🎯 {hit_target} به هدف رسید")
+        # مرتب‌سازی بر اساس بیشترین تغییر
+        dropped.sort(key=lambda x: x[0], reverse=True)
+        rose.sort(key=lambda x: x[0], reverse=True)
+
+        lines = [f"📊 <b>گزارش روزانه ({datetime.now().strftime('%Y-%m-%d')})</b>", ""]
+        lines.append(f"📉 {len(dropped)} کاهش | 📈 {len(rose)} افزایش | ➡️ {len(stable)} بدون تغییر")
+        lines.append("")
+
+        if dropped:
+            lines.append("🔥 <b>فرصت‌های خرید (کاهش قیمت):</b>")
+            for _, text in dropped:
+                lines.append(text)
+                lines.append("") # فاصله بین محصولات
+
+        if rose:
+            lines.append("⚠️ <b>افزایش قیمت‌ها:</b>")
+            for _, text in rose:
+                lines.append(text)
+                lines.append("")
+
+        if stable:
+            lines.append("➡️ <b>بدون تغییر:</b>")
+            for text in stable[:5]:
+                lines.append(text)
+                lines.append("")
+            if len(stable) > 5:
+                lines.append(f"<i>و {len(stable) - 5} محصول دیگر...</i>")
+
+        if hit_target > 0:
+            lines.append("━━━━━━━━━━━━━━━━")
+            lines.append(f"🎯 <b>{hit_target} محصول به قیمت هدف رسید!</b>")
 
         return "\n".join(lines)
 
     except Exception as e:
         logger.error(f"Daily report error: {e}")
         return None
-
+    
 def send_daily_report():
     """ارسال گزارش به همه کاربران فعال"""
     logger.info("📊 شروع ارسال گزارش روزانه به همه کاربران...")

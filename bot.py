@@ -1025,6 +1025,85 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("\n".join(lines), parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
         return
 
+    # ---------- مقایسه در ترب ----------
+    if data.startswith("torob:"):
+        idx = int(data.split(":")[1])
+        results = context.user_data.get("search", {}).get("results", [])
+        if idx >= len(results):
+            await query.message.reply_text("❌ خطا. دوباره /add بزن.")
+            return
+
+        product = results[idx]
+        title = product["title"]
+        dk_price = product.get("price")
+
+        msg = await query.message.reply_text(
+            f"🔍 در حال جستجو و تحلیل در ترب برای:\n«{esc(title[:50])}»..."
+        )
+
+        # اینجا limit رو ۳۰ گذاشتیم که تحلیل دقیق‌تر باشه
+        torob_results = search_torob(title, limit=30)
+
+        if not torob_results:
+            await msg.edit_text("❌ نتیجه‌ای در ترب پیدا نشد.")
+            return
+
+        valid = [r for r in torob_results if r.get("price")]
+        if not valid:
+            await msg.edit_text("❌ قیمتی در ترب پیدا نشد.")
+            return
+
+        cheapest = min(valid, key=lambda x: x["price"])
+        most_expensive = max(valid, key=lambda x: x["price"])
+        avg_price = sum(r["price"] for r in valid) // len(valid)
+        price_spread = most_expensive["price"] - cheapest["price"]
+
+        lines = [f"🏆 <b>تحلیل قیمت در ترب</b>", f"📦 «{esc(title[:60])}»", ""]
+
+        if dk_price:
+            diff = cheapest["price"] - dk_price
+            if diff < 0:
+                lines.append(f"📉 <b>ترب {abs(diff):,} تومان ارزان‌تر است!</b>")
+            elif diff > 0:
+                lines.append(f"📈 <b>دیجی‌کالا {abs(diff):,} تومان ارزان‌تر است</b>")
+            else:
+                lines.append("🤝 <b>قیمت‌ها برابر است</b>")
+            lines.append("")
+
+        lines.append(f"💰 <b>ارزان‌ترین:</b> {cheapest['price']:,} تومان")
+        if cheapest.get("shop_text"):
+            lines.append(f"   🏪 {esc(cheapest['shop_text'])}")
+        lines.append(f"📊 <b>میانگین بازار:</b> {avg_price:,} تومان")
+        lines.append(f"📈 <b>گران‌ترین:</b> {most_expensive['price']:,} تومان")
+        if price_spread > 0:
+            lines.append(f"↔️ <b>اختلاف بازار:</b> {price_spread:,} تومان")
+        lines.append("")
+
+        lines.append(f"<b>🏪 فروشندگان برتر (از بین {len(valid)} فروشنده):</b>")
+        kb = []
+        # اینجا ۱۰ تای اول (ارزان‌ترین‌ها) رو نشون می‌دیم
+        for i, r in enumerate(valid[:10], 1):
+            shop = r.get("shop_text", "نامشخص")
+            lines.append(f"{i}. {esc(shop[:25])} | 💰 {r['price']:,} ت")
+            if r.get("url"):
+                kb.append([InlineKeyboardButton(
+                    f"🛒 {shop[:20]} — {r['price']:,} ت",
+                    url=r["url"]
+                )])
+
+        kb.append([InlineKeyboardButton("🔙 بازگشت به نتایج", callback_data="back_results")])
+
+        try:
+            await msg.edit_text(
+                "\n".join(lines),
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(kb),
+                disable_web_page_preview=True,
+            )
+        except Exception as e:
+            logger.error(f"torob edit: {e}")
+        return
+
     # ---------- افزودن به پایش (از صفحه جزئیات) ----------
     if data.startswith("add:"):
         idx = int(data.split(":")[1])

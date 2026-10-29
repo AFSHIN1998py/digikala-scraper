@@ -738,6 +738,35 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         return
 
+    # ---------- دریافت اطلاعات کاربر جدید از ادمین ----------
+    if state == "waiting_new_user":
+        try:
+            parts = text.split()
+            if len(parts) != 2:
+                raise ValueError("فرمت اشتباه")
+            
+            new_uid = int(parts[0])
+            plan = parts[1].lower()
+            
+            if plan not in ["basic", "pro", "business"]:
+                raise ValueError("پلن نامعتبر")
+
+            # ثبت توی دیتابیس
+            add_user(new_uid, plan)
+            
+            await update.message.reply_text(
+                f"✅ کاربر <code>{new_uid}</code> با پلن <b>{PLAN_NAMES_FA.get(plan, plan)}</b> با موفقیت ثبت شد.",
+                parse_mode="HTML", reply_markup=main_menu_kb()
+            )
+        except ValueError as e:
+            await update.message.reply_text(
+                "❌ فرمت اشتباهه. دقیقاً به این شکل بفرست:\n"
+                "<code>123456789 pro</code>",
+                parse_mode="HTML"
+            )
+        context.user_data.clear()
+        return
+
     # ---------- منتظر محدوده قیمت ----------
     if state == "waiting_price_range":
         if text == "/skip":
@@ -985,6 +1014,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         page = int(data.split(":")[1])
         products = get_all_products(user_id)
         await _render_list(query, products, page=page, edit=True)
+        return
+
+    # ---------- افزودن کاربر جدید توسط ادمین ----------
+    if data == "admin:add":
+        if update.effective_user.id != int(os.getenv("CHAT_ID", "0")):
+            return
+        context.user_data["state"] = "waiting_new_user"
+        await query.edit_message_text(
+            "👤 <b>اطلاعات کاربر جدید رو بفرست:</b>\n\n"
+            "فرمت: <code>UserID Plan</code>\n\n"
+            "مثال برای پلن حرفه‌ای:\n"
+            "<code>123456789 pro</code>\n\n"
+            "پلن‌ها: <code>basic</code> (۵ محصول) | <code>pro</code> (۱۵ محصول) | <code>business</code> (۳۰ محصول)",
+            parse_mode="HTML"
+        )
         return
 
     # ---------- اطلاعات محصول (از لیست) ----------

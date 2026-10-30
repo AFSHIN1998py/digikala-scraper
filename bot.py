@@ -73,6 +73,28 @@ def add_user(user_id: int, plan: str = "basic"):
     conn.commit()
     conn.close()
 
+def get_user_products_count(user_id: int) -> int:
+    conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM products WHERE user_id = %s", (user_id,))
+    count = c.fetchone()[0]
+    conn.close()
+    return count
+
+def toggle_user_active(user_id: int):
+    conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+    c = conn.cursor()
+    c.execute("UPDATE users SET is_active = NOT is_active WHERE user_id = %s", (user_id,))
+    conn.commit()
+    conn.close()
+
+def delete_user(user_id: int):
+    conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+    c = conn.cursor()
+    c.execute("DELETE FROM users WHERE user_id = %s", (user_id,))
+    conn.commit()
+    conn.close()
+
 def get_all_users() -> list[dict]:
     conn = psycopg2.connect(os.getenv("DATABASE_URL"))
     c = conn.cursor()
@@ -340,6 +362,7 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await update.message.reply_text("✅ لغو شد.", reply_markup=main_menu_kb())
 
+
 async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ارسال گزارش فوری (فقط برای کاربری که درخواست داده)"""
     user_id = update.effective_user.id
@@ -353,21 +376,29 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(report, parse_mode="HTML")
     else:
         await update.message.reply_text("📭 محصولی برای گزارش وجود ندارد.")
+
+
 async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != int(os.getenv("CHAT_ID", "0")):
         return
         
     users = get_all_users()
-    text = "👑 <b>پنل مدیریت</b>\n\n"
+    kb = []
     for u in users:
         status = "✅" if u["is_active"] else "❌"
-        text += f"{status} <code>{u['user_id']}</code> - {PLAN_NAMES_FA.get(u['plan'], u['plan'])}\n"
+        plan_fa = PLAN_NAMES_FA.get(u["plan"], u["plan"])
+        kb.append([InlineKeyboardButton(
+            f"{status} {u['user_id']} - {plan_fa}", 
+            callback_data=f"adm_usr:{u['user_id']}"
+        )])
+        
+    kb.append([InlineKeyboardButton("➕ افزودن کاربر", callback_data="admin:add")])
+    kb.append([InlineKeyboardButton("🔙 منوی اصلی", callback_data="menu:main")])
     
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ افزودن کاربر", callback_data="admin:add")],
-        [InlineKeyboardButton("🔙 منوی اصلی", callback_data="menu:main")]
-    ])
-    await update.message.reply_text(text, parse_mode="HTML", reply_markup=kb)
+    await update.message.reply_text(
+        "👑 <b>پنل مدیریت</b>\n\nبرای مدیریت هر کاربر روی اسمش کلیک کن:",
+        parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb)
+    )
 
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
@@ -1024,6 +1055,78 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _render_list(query, products, page=page, edit=True)
         return
 
+        # ---------- مدیریت کاربر خاص ----------
+    if data.startswith("adm_usr:"):
+        uid = int(data.split(":")[1])
+        user = get_user(uid)
+        if not user:
+            await query.edit_message_text("❌ کاربر یافت نشد.")
+            return
+        
+        count = get_user_products_count(uid)
+        status = "فعال ✅" if user["is_active"] else "غیرفعال ❌"
+        plan_fa = PLAN_NAMES_FA.get(user["plan"], user["plan"])
+        
+        text = (
+            f"👤 <b>مدیریت کاربر</b>\n\n"
+            f"🆔 آیدی: <code>{uid}</code>\n"
+            f"📦 پلن: {plan_fa}\n"
+            f"📊 تعداد محصولات: {count}\n"
+            f"🔘 وضعیت: {status}"
+        )
+        
+        # دکمه‌های تغییر پلن
+        kb = [
+            [InlineKeyboardButton("🔹 پایه (۵)", callback_data=f"chg_pln:{uid}:basic"),
+             InlineKeyboardButton("🔸 حرفه‌ای (۱۵)", callback_data=f"chg_pln:{uid}:pro"),
+             InlineKeyboardButton("🔶 سازمانی (۳۰)", callback_data=f"chg_pln:{uid}:business")],
+            [InlineKeyboardButton("🔄 تغییر وضعیت (فعال/غیرفعال)", callback_data=f"tgl_act:{uid}")],
+            [InlineKeyboardButton("🗑 حذف کاربر", callback_data=f"del_usr:{uid}")],
+            [InlineKeyboardButton("🔙 بازگشت به لیست", callback_data="admin:main")]
+        ]
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
+        return
+
+    # ---------- تغییر پلن ----------
+    if data.startswith("chg_pln:"):
+        parts = data.split(":")
+        uid = int(parts[1])
+        new_plan = parts[2]
+        update_user_plan(uid, new_plan)
+        await query.answer(f"پلن به {PLAN_NAMES_FA.get(new_plan)} تغییر یافت.")
+        # برگشت به صفحه کاربر
+        await handle_callback(update, context) # رفرش صفحه
+        return
+
+    # ---------- تغییر وضعیت ----------
+    if data.startswith("tgl_act:"):
+        uid = int(data.split(":")[1])
+        toggle_user_active(uid)
+        await query.answer("وضعیت کاربر تغییر کرد.")
+        # برگشت به صفحه کاربر
+        await handle_callback(update, context)
+        return
+
+    # ---------- حذف کاربر ----------
+    if data.startswith("del_usr:"):
+        uid = int(data.split(":")[1])
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ بله، حذف کن", callback_data=f"del_usr_ok:{uid}")],
+            [InlineKeyboardButton("❌ نه", callback_data=f"adm_usr:{uid}")]
+        ])
+        await query.edit_message_text("⚠️ مطمئنی می‌خوای این کاربر رو کامل حذف کنی؟", reply_markup=kb)
+        return
+
+    if data.startswith("del_usr_ok:"):
+        uid = int(data.split(":")[1])
+        delete_user(uid)
+        await query.edit_message_text("✅ کاربر حذف شد.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لیست", callback_data="admin:main")]]))
+        return
+
+    if data == "admin:main":
+        # فراخوانی مجدد تابع cmd_admin برای نمایش لیست
+        await cmd_admin(update, context)
+        return
     # ---------- افزودن کاربر جدید توسط ادمین ----------
     if data == "admin:add":
         if update.effective_user.id != int(os.getenv("CHAT_ID", "0")):

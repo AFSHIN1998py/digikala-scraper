@@ -20,7 +20,7 @@ from telegram.ext import (
     MessageHandler, filters, ContextTypes,
     TypeHandler, ApplicationHandlerStop,
 )
-
+from telegram import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from scraper import (
     search_products, search_torob, export_to_csv, init_db, monitor,
     send_startup_message, send_daily_report, CSV_PATH, BOT_TOKEN,
@@ -323,6 +323,13 @@ def product_detail_kb(url: str, abs_idx: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🔙 بازگشت به نتایج", callback_data="back_results")],
     ])
 
+def get_main_reply_keyboard() -> ReplyKeyboardMarkup:
+    keyboard = [
+        [KeyboardButton("➕ افزودن محصول"), KeyboardButton("📋 لیست محصولات")],
+        [KeyboardButton("📊 گزارش روزانه"), KeyboardButton("📁 خروجی CSV")],
+        [KeyboardButton("❓ راهنما")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
 
 # ============================================
 # دستورات
@@ -332,10 +339,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 <b>سلام!</b>\n\n"
         "من ربات پایش قیمت دیجی‌کالا هستم.\n\n"
-        "👇 از منوی زیر شروع کن:",
-        parse_mode="HTML", reply_markup=main_menu_kb()
+        "👇 از منوی زیر شروع کن (هم می‌تونی از دکمه‌های پایین صفحه استفاده کنی):",
+        parse_mode="HTML", 
+        reply_markup=get_main_reply_keyboard() # <--- این خط تغییر کرد
     )
-
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
@@ -610,6 +617,18 @@ async def render_detail(query, context, abs_idx: int, from_list=False):
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = context.user_data.get("state")
     text = update.message.text.strip() if update.message.text else ""
+
+    # ---------- چک کردن دکمه‌های کیبورد پایین ----------
+    if text == "➕ افزودن محصول":
+        return await cmd_add(update, context)
+    elif text == "📋 لیست محصولات":
+        return await cmd_list(update, context)
+    elif text == "📊 گزارش روزانه":
+        return await cmd_report(update, context)
+    elif text == "📁 خروجی CSV":
+        return await cmd_export(update, context)
+    elif text == "❓ راهنما":
+        return await cmd_help(update, context)
 
     # ---------- منتظر اسم یا لینک ----------
     if state == "waiting_name":

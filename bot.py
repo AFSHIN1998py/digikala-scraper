@@ -341,10 +341,18 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ لغو شد.", reply_markup=main_menu_kb())
 
 async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ارسال گزارش فوری (برای تست)"""
+    """ارسال گزارش فوری (فقط برای کاربری که درخواست داده)"""
+    user_id = update.effective_user.id
     await update.message.reply_text("⏳ در حال ساخت گزارش...")
-    send_daily_report()
-
+    
+    # گزارش فقط برای همین کاربر ساخته میشه
+    from scraper import get_daily_report
+    report = get_daily_report(user_id)
+    
+    if report:
+        await update.message.reply_text(report, parse_mode="HTML")
+    else:
+        await update.message.reply_text("📭 محصولی برای گزارش وجود ندارد.")
 async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != int(os.getenv("CHAT_ID", "0")):
         return

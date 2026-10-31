@@ -23,7 +23,7 @@ from telegram.ext import (
 
 from scraper import (
     search_products, search_torob, export_to_csv, init_db, monitor,
-    send_startup_message, send_daily_report, CSV_PATH, BOT_TOKEN,
+    send_startup_message, send_daily_report, BOT_TOKEN,
     SORT_NAMES_FA, extract_product_id, fetch_product_api,
     parse_api_response,
 )
@@ -265,8 +265,24 @@ def results_kb(results, page, total_pages, total_count, active_filters=None):
     nav.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
     if page < total_pages - 1:
         nav.append(InlineKeyboardButton("بعدی ➡️", callback_data=f"pg:{page+1}"))
-    kb.append(nav)
+    
+    if len(nav) > 1:
+        kb.append(nav)
 
+    # فیلترها رو می‌بریم بالا و بزرگش می‌کنیم
+    filters = active_filters or {}
+    active_count = sum([
+        1 if filters.get("min_price") or filters.get("max_price") else 0,
+        1 if filters.get("only_discounted") else 0,
+        1 if filters.get("only_available") else 0,
+    ])
+    filter_label = "🔧 فیلترها (دقیق‌تر کردن نتایج)"
+    if active_count > 0:
+        filter_label = f"✅ {active_count} فیلتر فعال (برای تغییر کلیک کن)"
+        
+    kb.append([InlineKeyboardButton(filter_label, callback_data="flt:menu")])
+
+    # مرتب‌سازی‌ها میرن پایین
     kb.append([
         InlineKeyboardButton("🎯 مرتبط", callback_data="srt:relevance"),
         InlineKeyboardButton("💰 ارزان", callback_data="srt:cheapest"),
@@ -278,22 +294,8 @@ def results_kb(results, page, total_pages, total_count, active_filters=None):
         InlineKeyboardButton("🆕 جدید", callback_data="srt:newest"),
     ])
 
-    filters = active_filters or {}
-    filter_label = "🔧 فیلترها"
-    active_count = sum([
-        1 if filters.get("min_price") or filters.get("max_price") else 0,
-        1 if filters.get("only_discounted") else 0,
-        1 if filters.get("only_available") else 0,
-    ])
-    if active_count > 0:
-        filter_label = f"🔧 فیلترها ({active_count} فعال)"
-
-    kb.append([
-        InlineKeyboardButton(filter_label, callback_data="flt:menu"),
-        InlineKeyboardButton("❌ لغو", callback_data="cncl"),
-    ])
+    kb.append([InlineKeyboardButton("❌ لغو", callback_data="cncl")])
     return InlineKeyboardMarkup(kb)
-
 
 def filters_menu_kb(active=None):
     active = active or {}
@@ -501,15 +503,16 @@ async def _render_list(target, products, page=0, edit=False):
 
 async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        export_to_csv()
-        if os.path.exists(CSV_PATH):
-            with open(CSV_PATH, "rb") as f:
-                await update.message.reply_document(
-                    document=f, filename="prices.csv", caption="📊 CSV"
-                )
+        user_id = update.effective_user.id
+        # پاس دادن user_id به تابع
+        file_path = export_to_csv(user_id) 
+        
+        with open(file_path, "rb") as f:
+            await update.message.reply_document(
+                document=f, filename="my_prices.csv", caption="📊 خروجی اختصاصی شما"
+            )
     except Exception as e:
         await update.message.reply_text(f"❌ خطا: {e}")
-
 
 # ============================================
 # جستجو و نمایش
@@ -545,6 +548,7 @@ async def render_results(target, context, edit=False):
     lines = [
         f"🔍 <b>نتایج:</b> «{esc(query)}»",
         f"📊 {SORT_NAMES_FA.get(sort, sort)}",
+        f"<i>💡 برای پیدا کردن دقیق‌تر محصول، از دکمه «🔧 فیلترها» استفاده کن.</i>",
     ]
     if filters.get("min_price") or filters.get("max_price"):
         mn = f"{filters.get('min_price', 0):,}" if filters.get("min_price") else "0"
@@ -962,10 +966,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ---------- خروجی CSV ----------
     if data == "menu:export":
         try:
-            export_to_csv()
-            if os.path.exists(CSV_PATH):
-                with open(CSV_PATH, "rb") as f:
-                    await query.message.reply_document(document=f, filename="prices.csv", caption="📊 CSV")
+            # user_id قبلاً بالای handle_callback تعریف شده
+            file_path = export_to_csv(user_id)
+            with open(file_path, "rb") as f:
+                await query.message.reply_document(
+                    document=f, filename="my_prices.csv", caption="📊 خروجی اختصاصی شما"
+                )
         except Exception as e:
             await query.message.reply_text(f"❌ خطا: {e}")
         return

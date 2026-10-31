@@ -20,7 +20,7 @@ from telegram.ext import (
     MessageHandler, filters, ContextTypes,
     TypeHandler, ApplicationHandlerStop,
 )
-from telegram import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+
 from scraper import (
     search_products, search_torob, export_to_csv, init_db, monitor,
     send_startup_message, send_daily_report, CSV_PATH, BOT_TOKEN,
@@ -323,13 +323,6 @@ def product_detail_kb(url: str, abs_idx: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🔙 بازگشت به نتایج", callback_data="back_results")],
     ])
 
-def get_main_reply_keyboard() -> ReplyKeyboardMarkup:
-    keyboard = [
-        [KeyboardButton("➕ افزودن محصول"), KeyboardButton("📋 لیست محصولات")],
-        [KeyboardButton("📊 گزارش روزانه"), KeyboardButton("📁 خروجی CSV")],
-        [KeyboardButton("❓ راهنما")]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
 
 # ============================================
 # دستورات
@@ -341,7 +334,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "من ربات پایش قیمت دیجی‌کالا هستم.\n\n"
         "👇 از منوی زیر شروع کن (هم می‌تونی از دکمه‌های پایین صفحه استفاده کنی):",
         parse_mode="HTML", 
-        reply_markup=get_main_reply_keyboard() # <--- این خط تغییر کرد
+        reply_markup=main_menu_kb() # <--- این خط تغییر کرد
     )
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -369,8 +362,9 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await update.message.reply_text(
         "✅ لغو شد.", 
-        reply_markup=get_main_reply_keyboard() # کیبورد رو نگه می‌داره
+        reply_markup=main_menu_kb()
     )
+
 
 async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ارسال گزارش فوری (فقط برای کاربری که درخواست داده)"""
@@ -386,6 +380,33 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("📭 محصولی برای گزارش وجود ندارد.")
 
+async def render_admin_user(query, context, uid: int):
+    user = get_user(uid)
+    if not user:
+        await query.edit_message_text("❌ کاربر یافت نشد.")
+        return
+    
+    count = get_user_products_count(uid)
+    status = "فعال ✅" if user["is_active"] else "غیرفعال ❌"
+    plan_fa = PLAN_NAMES_FA.get(user["plan"], user["plan"])
+    
+    text = (
+        f"👤 <b>مدیریت کاربر</b>\n\n"
+        f"🆔 آیدی: <code>{uid}</code>\n"
+        f"📦 پلن: {plan_fa}\n"
+        f"📊 تعداد محصولات: {count}\n"
+        f"🔘 وضعیت: {status}"
+    )
+    
+    kb = [
+        [InlineKeyboardButton("🔹 پایه (۵)", callback_data=f"chg_pln:{uid}:basic"),
+         InlineKeyboardButton("🔸 حرفه‌ای (۱۵)", callback_data=f"chg_pln:{uid}:pro"),
+         InlineKeyboardButton("🔶 سازمانی (۳۰)", callback_data=f"chg_pln:{uid}:business")],
+        [InlineKeyboardButton("🔄 تغییر وضعیت (فعال/غیرفعال)", callback_data=f"tgl_act:{uid}")],
+        [InlineKeyboardButton("🗑 حذف کاربر", callback_data=f"del_usr:{uid}")],
+        [InlineKeyboardButton("🔙 بازگشت به لیست", callback_data="admin:main")]
+    ]
+    await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
 
 async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != int(os.getenv("CHAT_ID", "0")):
@@ -1076,36 +1097,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _render_list(query, products, page=page, edit=True)
         return
 
-        # ---------- مدیریت کاربر خاص ----------
+    # ---------- مدیریت کاربر خاص ----------
     if data.startswith("adm_usr:"):
         uid = int(data.split(":")[1])
-        user = get_user(uid)
-        if not user:
-            await query.edit_message_text("❌ کاربر یافت نشد.")
-            return
-        
-        count = get_user_products_count(uid)
-        status = "فعال ✅" if user["is_active"] else "غیرفعال ❌"
-        plan_fa = PLAN_NAMES_FA.get(user["plan"], user["plan"])
-        
-        text = (
-            f"👤 <b>مدیریت کاربر</b>\n\n"
-            f"🆔 آیدی: <code>{uid}</code>\n"
-            f"📦 پلن: {plan_fa}\n"
-            f"📊 تعداد محصولات: {count}\n"
-            f"🔘 وضعیت: {status}"
-        )
-        
-        # دکمه‌های تغییر پلن
-        kb = [
-            [InlineKeyboardButton("🔹 پایه (۵)", callback_data=f"chg_pln:{uid}:basic"),
-             InlineKeyboardButton("🔸 حرفه‌ای (۱۵)", callback_data=f"chg_pln:{uid}:pro"),
-             InlineKeyboardButton("🔶 سازمانی (۳۰)", callback_data=f"chg_pln:{uid}:business")],
-            [InlineKeyboardButton("🔄 تغییر وضعیت (فعال/غیرفعال)", callback_data=f"tgl_act:{uid}")],
-            [InlineKeyboardButton("🗑 حذف کاربر", callback_data=f"del_usr:{uid}")],
-            [InlineKeyboardButton("🔙 بازگشت به لیست", callback_data="admin:main")]
-        ]
-        await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
+        await render_admin_user(query, context, uid)
         return
 
     # ---------- تغییر پلن ----------
@@ -1114,18 +1109,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         uid = int(parts[1])
         new_plan = parts[2]
         update_user_plan(uid, new_plan)
-        await query.answer(f"پلن به {PLAN_NAMES_FA.get(new_plan)} تغییر یافت.")
-        # برگشت به صفحه کاربر
-        await handle_callback(update, context) # رفرش صفحه
+        await query.answer(f"✅ پلن به {PLAN_NAMES_FA.get(new_plan)} تغییر یافت.") # پیام تایید
+        await render_admin_user(query, context, uid) # رفرش صفحه
         return
 
     # ---------- تغییر وضعیت ----------
     if data.startswith("tgl_act:"):
         uid = int(data.split(":")[1])
         toggle_user_active(uid)
-        await query.answer("وضعیت کاربر تغییر کرد.")
-        # برگشت به صفحه کاربر
-        await handle_callback(update, context)
+        await query.answer("✅ وضعیت کاربر تغییر کرد.") # پیام تایید
+        await render_admin_user(query, context, uid) # رفرش صفحه
         return
 
     # ---------- حذف کاربر ----------

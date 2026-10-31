@@ -198,19 +198,25 @@ def get_last_price(product_id: int) -> int | None:
     return row[0] if row else None
 
 
-def export_to_csv():
+def export_to_csv(user_id: int) -> str:
+    """خروجی CSV فقط برای محصولات یک کاربر خاص"""
+    # اسم فایل رو بر اساس user_id می‌سازیم تا کاربرا فایل هم رو خراب نکنن
+    custom_csv_path = f"data/prices_{user_id}.csv"
+    Path(custom_csv_path).parent.mkdir(parents=True, exist_ok=True)
+
     conn = psycopg2.connect(os.getenv("DATABASE_URL"))
     c = conn.cursor()
     c.execute("""
         SELECT p.title, p.url, ph.price, ph.timestamp
         FROM price_history ph
         JOIN products p ON p.product_id = ph.product_id
+        WHERE p.user_id = %s
         ORDER BY ph.timestamp DESC
-    """)
+    """, (user_id,))
     rows = c.fetchall()
     conn.close()
 
-    with open(CSV_PATH, "w", newline="", encoding="utf-8-sig") as f:
+    with open(custom_csv_path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
         writer.writerow(["عنوان", "لینک", "قیمت", "زمان"])
         for title, url, price, ts in rows:
@@ -222,11 +228,10 @@ def export_to_csv():
                     time_str = str(ts)[:16]
             except Exception:
                 time_str = str(ts)
-
             writer.writerow([title, url, price, time_str])
 
-    logger.info(f"✅ خروجی CSV ذخیره شد: {CSV_PATH}")
-
+    logger.info(f"✅ خروجی CSV برای کاربر {user_id} ذخیره شد: {custom_csv_path}")
+    return custom_csv_path
 
 # ============================================
 # بخش ۳: اسکرپینگ (API v2 دیجی‌کالا)

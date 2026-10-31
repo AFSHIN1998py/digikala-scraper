@@ -229,12 +229,12 @@ def insert_product(url: str, title: str, target: int, price: int, user_id: int) 
 # ============================================
 def main_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ افزودن محصول", callback_data="menu:add")],
+        [InlineKeyboardButton("➕ افزودن محصول (معمولی)", callback_data="menu:add")],
+        [InlineKeyboardButton("🔍 جستجوی پیشرفته", callback_data="menu:adv_search")],
         [InlineKeyboardButton("📋 لیست محصولات", callback_data="menu:list")],
         [InlineKeyboardButton("📊 خروجی CSV", callback_data="menu:export")],
         [InlineKeyboardButton("❓ راهنما", callback_data="menu:help")],
     ])
-
 
 def cancel_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
@@ -269,29 +269,27 @@ def results_kb(results, page, total_pages, total_count, active_filters=None):
     if len(nav) > 1:
         kb.append(nav)
 
-    # فیلترها رو می‌بریم بالا و بزرگش می‌کنیم
+    # دکمه فیلترها (بزرگ و شاخص)
     filters = active_filters or {}
     active_count = sum([
         1 if filters.get("min_price") or filters.get("max_price") else 0,
         1 if filters.get("only_discounted") else 0,
         1 if filters.get("only_available") else 0,
     ])
-    filter_label = "🔧 فیلترها (دقیق‌تر کردن نتایج)"
+    filter_label = "🔍 فیلترهای پیشرفته (قیمت، تخفیف، موجودی)"
     if active_count > 0:
         filter_label = f"✅ {active_count} فیلتر فعال (برای تغییر کلیک کن)"
         
     kb.append([InlineKeyboardButton(filter_label, callback_data="flt:menu")])
 
-    # مرتب‌سازی‌ها میرن پایین
+    # مرتب‌سازی‌های مفید (بدون مرتبط و جدید)
     kb.append([
-        InlineKeyboardButton("🎯 مرتبط", callback_data="srt:relevance"),
-        InlineKeyboardButton("💰 ارزان", callback_data="srt:cheapest"),
-        InlineKeyboardButton("💎 گران", callback_data="srt:expensive"),
+        InlineKeyboardButton("💰 ارزان‌ترین", callback_data="srt:cheapest"),
+        InlineKeyboardButton("💎 گران‌ترین", callback_data="srt:expensive"),
     ])
     kb.append([
         InlineKeyboardButton("🔥 پرفروش", callback_data="srt:bestseller"),
-        InlineKeyboardButton("⭐ امتیاز", callback_data="srt:rating"),
-        InlineKeyboardButton("🆕 جدید", callback_data="srt:newest"),
+        InlineKeyboardButton("⭐ بالاترین امتیاز", callback_data="srt:rating"),
     ])
 
     kb.append([InlineKeyboardButton("❌ لغو", callback_data="cncl")])
@@ -548,7 +546,6 @@ async def render_results(target, context, edit=False):
     lines = [
         f"🔍 <b>نتایج:</b> «{esc(query)}»",
         f"📊 {SORT_NAMES_FA.get(sort, sort)}",
-        f"<i>💡 برای پیدا کردن دقیق‌تر محصول، از دکمه «🔧 فیلترها» استفاده کن.</i>",
     ]
     if filters.get("min_price") or filters.get("max_price"):
         mn = f"{filters.get('min_price', 0):,}" if filters.get("min_price") else "0"
@@ -559,6 +556,7 @@ async def render_results(target, context, edit=False):
     if filters.get("only_available"):
         lines.append("✅ فقط موجود")
 
+    lines.append("<i>💡 برای دقیق‌تر شدن نتایج، از دکمه «🔍 فیلترهای پیشرفته» استفاده کن.</i>")
     lines.append(f"📄 {page+1}/{total_pages} — {len(results)} نتیجه\n")
 
     start = page * PAGE_SIZE
@@ -656,6 +654,35 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await cmd_export(update, context)
     elif text == "❓ راهنما":
         return await cmd_help(update, context)
+
+    # ---------- جستجوی پیشرفته: منتظر اسم ----------
+    if state == "waiting_name_adv":
+        if len(text) < 2:
+            await update.message.reply_text("❌ کوتاهه. دوباره بفرست.")
+            return
+
+        msg = await update.message.reply_text("⏳ در حال آماده‌سازی...")
+        results = search_products(text, limit=MAX_RESULTS, sort="relevance")
+        if not results:
+            await msg.edit_text("❌ چیزی پیدا نشد. /add بزن.")
+            context.user_data.clear()
+            return
+
+        # ذخیره نتایج برای بعد، ولی فعلاً فیلترها رو نشون بده
+        context.user_data["search"] = {
+            "query": text, "sort": "relevance",
+            "results": results, "page": 0, "filters": {},
+        }
+        context.user_data["state"] = "browsing"
+        await msg.delete()
+        
+        # نمایش منوی فیلترها به جای نتایج
+        await update.message.reply_text(
+            "⚙️ <b>فیلترهای جستجو</b>\n\n"
+            "می‌تونی فیلترها رو انتخاب کنی یا مستقیم نتایج رو ببینی:",
+            reply_markup=filters_menu_kb({})
+        )
+        return
 
     # ---------- منتظر اسم یا لینک ----------
     if state == "waiting_name":
@@ -926,6 +953,23 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("👋 <b>منوی اصلی</b>", parse_mode="HTML", reply_markup=main_menu_kb())
         except Exception:
             await query.message.reply_text("👋 <b>منوی اصلی</b>", parse_mode="HTML", reply_markup=main_menu_kb())
+        return
+
+    # ---------- جستجوی پیشرفته ----------
+    if data == "menu:adv_search":
+        context.user_data.clear()
+        context.user_data["state"] = "waiting_name_adv" # state جدید
+        try:
+            await query.edit_message_text(
+                "🔍 <b>جستجوی پیشرفته</b>\n\n"
+                "اول اسم محصول رو بفرست:",
+                parse_mode="HTML", reply_markup=cancel_kb()
+            )
+        except Exception:
+            await query.message.reply_text(
+                "🔍 <b>جستجوی پیشرفته</b>\n\nاول اسم محصول رو بفرست:",
+                parse_mode="HTML", reply_markup=cancel_kb()
+            )
         return
 
     # ---------- منوی افزودن ----------

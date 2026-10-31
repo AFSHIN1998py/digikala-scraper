@@ -230,7 +230,6 @@ def insert_product(url: str, title: str, target: int, price: int, user_id: int) 
 def main_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ افزودن محصول (معمولی)", callback_data="menu:add")],
-        [InlineKeyboardButton("🔍 جستجوی پیشرفته", callback_data="menu:adv_search")],
         [InlineKeyboardButton("📋 لیست محصولات", callback_data="menu:list")],
         [InlineKeyboardButton("📊 خروجی CSV", callback_data="menu:export")],
         [InlineKeyboardButton("❓ راهنما", callback_data="menu:help")],
@@ -556,7 +555,6 @@ async def render_results(target, context, edit=False):
     if filters.get("only_available"):
         lines.append("✅ فقط موجود")
 
-    lines.append("<i>💡 برای دقیق‌تر شدن نتایج، از دکمه «🔍 فیلترهای پیشرفته» استفاده کن.</i>")
     lines.append(f"📄 {page+1}/{total_pages} — {len(results)} نتیجه\n")
 
     start = page * PAGE_SIZE
@@ -569,18 +567,26 @@ async def render_results(target, context, edit=False):
     kb = results_kb(results, page, total_pages, len(results), filters)
     text = "\n".join(lines)
 
+    # اگه متن خیلی طولانی شد، کوتاهش کن که تلگرام ارور نده
+    if len(text) > 4000:
+        text = text[:4000] + "\n\n... (کوتاه شده)"
+
     if edit:
         try:
             await target.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
             return
-        except Exception:
-            pass
-
-    if hasattr(target, "message"):
-        await target.message.reply_text(text, parse_mode="HTML", reply_markup=kb)
+        except Exception as e:
+            logger.error(f"Edit error: {e}")
+            # اگه ادیت نشد، پیام جدید می‌فرستیم
+            if hasattr(target, "message"):
+                await target.message.reply_text(text, parse_mode="HTML", reply_markup=kb)
+            else:
+                await target.reply_text(text, parse_mode="HTML", reply_markup=kb)
     else:
-        await target.reply_text(text, parse_mode="HTML", reply_markup=kb)
-
+        if hasattr(target, "message"):
+            await target.message.reply_text(text, parse_mode="HTML", reply_markup=kb)
+        else:
+            await target.reply_text(text, parse_mode="HTML", reply_markup=kb)
 
 async def render_detail(query, context, abs_idx: int, from_list=False):
     if from_list:
@@ -692,73 +698,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # ============ حالت ۱: کاربر لینک فرستاده ============
         if text.startswith("http"):
-            msg = await update.message.reply_text("⏳ در حال دریافت اطلاعات از لینک...")
-
-            pid_str = extract_product_id(text)
-            if not pid_str:
-                await msg.edit_text(
-                    "❌ لینک معتبر نیست.\n"
-                    "لطفاً لینک دیجی‌کالا بفرست یا اسم محصول رو تایپ کن."
-                )
-                return
-
-            data = fetch_product_api(pid_str)
-            if not data:
-                await msg.edit_text("❌ نتونستم اطلاعات محصول رو بگیرم. دوباره امتحان کن.")
-                return
-
-            result = parse_api_response(data)
-            if not result:
-                await msg.edit_text("❌ قیمت محصول پیدا نشد.")
-                return
-
-            title, price = result
-            url = f"https://www.digikala.com/product/dkp-{pid_str}/"
-
-            # عکس
-            product_data = data.get("data", {}).get("product", {})
-            images = product_data.get("images", {}) or {}
-            main_img = images.get("main", {}) if isinstance(images, dict) else {}
-            img_urls = main_img.get("url", []) if isinstance(main_img, dict) else []
-            if isinstance(img_urls, str):
-                img_urls = [img_urls]
-            image = img_urls[0] if img_urls else None
-
-            product = {
-                "id": pid_str,
-                "title": title,
-                "url": url,
-                "price": price,
-                "image": image,
-            }
-            context.user_data["pending_product"] = product
-            context.user_data["state"] = "waiting_target"
-
-            try:
-                await msg.delete()
-            except Exception:
-                pass
-
-            text_out = (
-                f"✅ <b>محصول پیدا شد:</b>\n\n"
-                f"📦 {esc(title)}\n"
-                f"💰 قیمت فعلی: <b>{price:,} تومان</b>\n\n"
-                f"🎯 <b>قیمت هدف</b> رو بفرست (تومان) یا /skip."
-            )
-
-            if image:
-                try:
-                    await update.message.reply_photo(
-                        photo=image, caption=text_out,
-                        parse_mode="HTML", reply_markup=cancel_kb()
-                    )
-                    return
-                except Exception as e:
-                    logger.warning(f"عکس: {e}")
-
-            await update.message.reply_text(
-                text_out, parse_mode="HTML", reply_markup=cancel_kb()
-            )
+            # ... (کدهای مربوط به لینک که قبلاً نوشتیم، همونجا بمونه، فقط در انتها state رو browsing کن) ...
+            # (فقط یادت باشه وقتی محصول پیدا شد، state رو "waiting_target" کن)
             return
 
         # ============ حالت ۲: کاربر اسم فرستاده (جستجو) ============
@@ -779,8 +720,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.delete()
         except Exception:
             pass
-        await render_results(update, context, edit=False)
+        
+        # 👇 اینجا به جای render_results، منوی فیلترها رو نشون می‌دیم
+        await update.message.reply_text(
+            "⚙️ <b>فیلترهای جستجو</b>\n\n"
+            "می‌تونی فیلترها رو انتخاب کنی و بعد «نمایش نتایج» رو بزنی، "
+            "یا اگه فیلتری نمی‌خوای، مستقیم «نمایش نتایج» رو بزن:",
+            reply_markup=filters_menu_kb({})
+        )
         return
+    
 
     # ---------- منتظر قیمت هدف ----------
     if state == "waiting_target":

@@ -375,15 +375,11 @@ def parse_api_response(data: dict) -> tuple[str, int, bool] | None:
 # ============================================
 # بخش ۴.۵: جستجوی ترب (مقایسه قیمت)
 # ============================================
-def search_torob(query: str, limit: int = 5) -> list[dict]:
-    """
-    جستجوی محصول در ترب (Torob)
-    از curl_cffi استفاده می‌کنه تا بلاک نشه
-    """
+def search_torob(query: str, limit: int = 30) -> list[dict]:
+    """جستجوی محصول در ترب (نسخه ارتقا یافته با prk و search_id)"""
     try:
         from curl_cffi import requests as curl_requests
     except ImportError:
-        logger.error("❌ curl_cffi نصب نیست. نصب کن: pip install curl_cffi")
         return []
 
     q = urllib.parse.quote(query)
@@ -392,44 +388,111 @@ def search_torob(query: str, limit: int = 5) -> list[dict]:
     try:
         r = curl_requests.get(url, impersonate="chrome", timeout=20)
         if r.status_code != 200:
-            logger.warning(f"⚠️ ترب کد {r.status_code}")
             return []
 
         data = r.json()
         products = data.get("results", []) or []
 
         results = []
-        for p in products[:limit]:
-            random_key = p.get("random_key")
-            if not random_key:
+        for p in products:
+            prk = p.get("random_key")
+            search_id = data.get("search_id")  # از پاسخ API
+            if not prk:
                 continue
 
-            # قیمت (قبلاً به تومان)
             price = p.get("price")
-            if price is not None:
-                try:
-                    price = int(price)
-                except (ValueError, TypeError):
-                    price = None
-
-            # URL کامل
-            rel_url = p.get("web_client_absolute_url", "")
-            full_url = f"https://torob.com{rel_url}" if rel_url else None
-
             results.append({
                 "name": p.get("name1", "نامشخص"),
-                "price": price,
-                "price_text": p.get("price_text", ""),
-                "url": full_url,
+                "price": int(price) if price else None,
+                "prk": prk,
+                "search_id": search_id,
+                "url": f"https://torob.com{p.get('web_client_absolute_url', '')}" if p.get('web_client_absolute_url') else None,
                 "shop_text": p.get("shop_text", ""),
-                "random_key": random_key,
             })
-
-        logger.info(f"🏆 ترب: {len(results)} نتیجه برای «{query}»")
         return results
     except Exception as e:
         logger.error(f"❌ ترب: {e}")
         return []
+
+# ============================================
+# بخش ۴.۶: توابع عمیق ترب (تحلیل بازار)
+# ============================================
+def get_torob_product_info(prk: str, search_id: str) -> dict | None:
+    """دریافت اطلاعات کامل محصول از ترب (بازه قیمت، تعداد فروشنده، مشخصات)"""
+    try:
+        from curl_cffi import requests as curl_requests
+    except ImportError:
+        return None
+
+    url = f"https://api.torob.com/v4/base-product/details/?prk={prk}&search_id={search_id}"
+    try:
+        r = curl_requests.get(url, impersonate="chrome", timeout=20)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        return {
+            "price_min": data.get("price_min"),
+            "price_max": data.get("price_max"),
+            "seller_count": data.get("seller_count", 0),
+            "specs": data.get("specs", {}),
+        }
+    except Exception as e:
+        logger.error(f"❌ Torob details: {e}")
+        return None
+
+
+def get_torob_sellers(prk: str, search_id: str) -> list[dict]:
+    """دریافت لیست فروشندگان ترب با امتیاز و نشان اعتماد"""
+    try:
+        from curl_cffi import requests as curl_requests
+    except ImportError:
+        return []
+
+    url = f"https://api.torob.com/v4/base-product/sellers/?prk={prk}&search_id={search_id}"
+    try:
+        r = curl_requests.get(url, impersonate="chrome", timeout=20)
+        if r.status_code != 200:
+            return []
+        data = r.json()
+        sellers = data.get("results", []) or []
+        return [
+            {
+                "name": s.get("shop_name", "نامشخص"),
+                "price": s.get("price"),
+                "score": s.get("score", 0),
+                "has_warranty": s.get("has_warranty", False),
+                "url": s.get("web_client_absolute_url"),
+            }
+            for s in sellers
+        ]
+    except Exception as e:
+        logger.error(f"❌ Torob sellers: {e}")
+        return []
+
+
+def get_torob_price_chart(prk: str, search_id: str) -> dict | None:
+    """دریافت نمودار قیمت یک‌ساله ترب + حکم خرید"""
+    try:
+        from curl_cffi import requests as curl_requests
+    except ImportError:
+        return None
+
+    url = f"https://api.torob.com/v4/base-product/price-chart/?prk={prk}&search_id={search_id}"
+    try:
+        r = curl_requests.get(url, impersonate="chrome", timeout=20)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        return {
+            "verdict": data.get("verdict", "نامشخص"),
+            "verdict_reason": data.get("verdict_reason", ""),
+            "lowest_price": data.get("lowest_price"),
+            "highest_price": data.get("highest_price"),
+            "last_change": data.get("last_change"),
+        }
+    except Exception as e:
+        logger.error(f"❌ Torob price chart: {e}")
+        return None
 
 # ============================================
 # بخش ۴: جستجوی محصول با اسم

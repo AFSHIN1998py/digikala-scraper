@@ -367,8 +367,10 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    await update.message.reply_text("✅ لغو شد.", reply_markup=main_menu_kb())
-
+    await update.message.reply_text(
+        "✅ لغو شد.", 
+        reply_markup=get_main_reply_keyboard() # کیبورد رو نگه می‌داره
+    )
 
 async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ارسال گزارش فوری (فقط برای کاربری که درخواست داده)"""

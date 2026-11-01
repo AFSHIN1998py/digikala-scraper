@@ -24,8 +24,8 @@ from telegram.ext import (
 from scraper import (
     search_products, search_torob, export_to_csv, init_db, monitor,
     send_startup_message, send_daily_report, BOT_TOKEN,
-    SORT_NAMES_FA, extract_product_id, fetch_product_api,
-    parse_api_response, get_torob_product_info, get_torob_sellers, get_torob_price_chart
+    SORT_NAMES_FA, get_torob_product_info, get_torob_sellers,
+    get_torob_price_chart, format_price
 )
 
 logging.basicConfig(
@@ -726,6 +726,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⚙️ <b>فیلترهای جستجو</b>\n\n"
             "می‌تونی فیلترها رو انتخاب کنی و بعد «نمایش نتایج» رو بزنی، "
             "یا اگه فیلتری نمی‌خوای، مستقیم «نمایش نتایج» رو بزن:",
+            parse_mode="HTML",
             reply_markup=filters_menu_kb({})
         )
         return
@@ -1223,73 +1224,59 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         most_expensive = max(valid, key=lambda x: x["price"])
         avg_price = sum(r["price"] for r in valid) // len(valid)
 
-        # دریافت تحلیل عمیق‌تر (اطلاعات محصول + فروشندگان + نمودار قیمت)
+        # دریافت تحلیل عمیق‌تر
         prk = cheapest["prk"]
         search_id = cheapest.get("search_id")
         details = get_torob_product_info(prk, search_id) if search_id else None
         sellers = get_torob_sellers(prk, search_id) if search_id else []
         chart = get_torob_price_chart(prk, search_id) if search_id else None
 
-        # ساخت متن گزارش
-        lines = [f"🏆 <b>تحلیل جامع بازار در ترب</b>", f"📦 «{esc(title[:60])}»", ""]
+        # ساخت متن گزارش (تمیز و کوتاه)
+        lines = [f"🏆 <b>تحلیل بازار ترب</b>", f"📦 «{esc(title[:50])}»", ""]
 
         # مقایسه با دیجی‌کالا
         if dk_price:
             diff = cheapest["price"] - dk_price
             if diff < 0:
-                lines.append(f"📉 <b>ترب {abs(diff):,} تومان ارزان‌تر است!</b>")
+                lines.append(f"📉 <b>ترب {format_price(abs(diff))} تومان ارزان‌تر است!</b>")
             elif diff > 0:
-                lines.append(f"📈 <b>دیجی‌کالا {abs(diff):,} تومان ارزان‌تر است</b>")
+                lines.append(f"📈 <b>دیجی‌کالا {format_price(diff)} تومان ارزان‌تر است</b>")
             else:
                 lines.append("🤝 <b>قیمت‌ها برابر است</b>")
             lines.append("")
 
         # آمار بازار
-        lines.append(f"💰 <b>ارزان‌ترین:</b> {cheapest['price']:,} تومان")
+        lines.append(f"💰 <b>ارزان‌ترین:</b> {format_price(cheapest['price'])} تومان")
         if cheapest.get("shop_text"):
             lines.append(f"   🏪 {esc(cheapest['shop_text'])}")
-        lines.append(f"📊 <b>میانگین:</b> {avg_price:,} تومان")
-        lines.append(f"📈 <b>گران‌ترین:</b> {most_expensive['price']:,} تومان")
-        lines.append(f"↔️ <b>اختلاف بازار:</b> {most_expensive['price'] - cheapest['price']:,} تومان")
+        lines.append(f"📊 <b>میانگین بازار:</b> {format_price(avg_price)} تومان")
+        lines.append(f"📈 <b>گران‌ترین:</b> {format_price(most_expensive['price'])} تومان")
+        lines.append(f"↔️ <b>اختلاف بازار:</b> {format_price(most_expensive['price'] - cheapest['price'])} تومان")
         lines.append("")
 
-        # حکم خرید از نمودار قیمت
+        # حکم خرید
         if chart:
             verdict_map = {"great": "🔥 عالی (زمان خرید است)", "fair": "👌 منصفانه", "high": "⚠️ بالا (شاید صبر کنی)"}
             lines.append(f"🎯 <b>نظر ترب:</b> {verdict_map.get(chart['verdict'], chart['verdict'])}")
-            if chart.get("verdict_reason"):
-                lines.append(f"   💡 {esc(chart['verdict_reason'][:80])}")
-            lines.append("")
-
-        # اطلاعات تکمیلی
-        if details:
-            lines.append(f"🏪 <b>تعداد فروشندگان:</b> {details['seller_count']}")
-            if details['price_min'] and details['price_max']:
-                lines.append(f"💰 <b>بازه قیمت:</b> {details['price_min']:,} تا {details['price_max']:,} تومان")
             lines.append("")
 
         # لیست فروشندگان برتر (حداکثر ۵ تا با دکمه خرید)
-        if sellers:
-            lines.append(f"<b>🏪 فروشندگان برتر:</b>")
-            kb = []
-            for i, s in enumerate(sellers[:5], 1):
-                warranty = " 🛡" if s.get("has_warranty") else ""
-                score = f" ⭐{s['score']}" if s.get("score") else ""
-                lines.append(f"{i}. {esc(s['name'][:25])} | 💰 {s['price']:,} ت{warranty}{score}")
-                if s.get("url"):
-                    kb.append([InlineKeyboardButton(
-                        f"🛒 {s['name'][:20]} — {s['price']:,} ت",
-                        url=s["url"]
-                    )])
-        else:
-            kb = []
-            for i, r in enumerate(valid[:5], 1):
-                lines.append(f"{i}. {esc(r['name'][:25])} | 💰 {r['price']:,} ت")
-                if r.get("url"):
-                    kb.append([InlineKeyboardButton(
-                        f"🛒 {r['name'][:20]} — {r['price']:,} ت",
-                        url=r["url"]
-                    )])
+        lines.append(f"<b>🏪 فروشندگان برتر:</b>")
+        kb = []
+        seller_list = sellers[:5] if sellers else valid[:5]
+        
+        for i, s in enumerate(seller_list, 1):
+            name = s.get("name") or s.get("shop_name") or "نامشخص"
+            price = s.get("price")
+            warranty = " 🛡" if s.get("has_warranty") else ""
+            score = f" ⭐{s.get('score')}" if s.get("score") else ""
+            
+            lines.append(f"{i}. {esc(name[:25])} | 💰 {format_price(price)} ت{warranty}{score}")
+            if s.get("url"):
+                kb.append([InlineKeyboardButton(
+                    f"🛒 {name[:20]} — {format_price(price)} ت",
+                    url=s["url"]
+                )])
 
         kb.append([InlineKeyboardButton("🔙 بازگشت به نتایج", callback_data="back_results")])
 

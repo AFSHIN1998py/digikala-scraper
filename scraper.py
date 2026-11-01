@@ -372,6 +372,13 @@ def parse_api_response(data: dict) -> tuple[str, int, bool] | None:
         logger.error(f"❌ خطای پارس API: {e}")
         return None
 
+def format_price(price: int) -> str:
+    """تبدیل قیمت به فرمت خوانا (میلیون)"""
+    if not price: return "نامشخص"
+    if price >= 1_000_000:
+        return f"{price / 1_000_000:.1f} میلیون"
+    return f"{price:,} تومان"
+
 # ============================================
 # بخش ۴.۵: جستجوی ترب (مقایسه قیمت)
 # ============================================
@@ -587,8 +594,25 @@ def search_products(query: str, limit: int = 10, sort: str = "relevance",
     logger.info(f"📊 یکتا: {len(results)} محصول")
 
     # ---------- فیلترها ----------
+    # دیکشنری برندها برای تشخیص هوشمند
+    brands_map = {
+        "اپل": ["اپل", "آیفون", "iphone", "apple"],
+        "سامسونگ": ["سامسونگ", "samsung"],
+        "شیائومی": ["شیائومی", "redmi", "xiaomi", "poco"],
+        "هواوی": ["هواوی", "huawei"],
+        "نوکیا": ["نوکیا", "nokia"],
+    }
+    
+    query_lower = query.lower()
+    detected_brand = None
+    for b_fa, b_en_list in brands_map.items():
+        if b_fa in query_lower or any(b in query_lower for b in b_en_list):
+            detected_brand = b_en_list
+            break
+
     filtered = []
     for r in results:
+        # فیلتر قیمت
         if min_price > 0 and (r["price"] is None or r["price"] < min_price):
             continue
         if max_price > 0 and (r["price"] is None or r["price"] > max_price):
@@ -597,6 +621,13 @@ def search_products(query: str, limit: int = 10, sort: str = "relevance",
             continue
         if only_available and r["stock"] <= 0:
             continue
+            
+        # فیلتر هوشمند برند (اگه کاربر برندی رو سرچ کرد، فقط همون رو بیار)
+        if detected_brand:
+            title_lower = r["title"].lower()
+            if not any(b in title_lower for b in detected_brand):
+                continue
+        
         filtered.append(r)
 
     logger.info(f"📊 بعد از فیلتر: {len(filtered)}")
